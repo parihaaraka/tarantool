@@ -58,6 +58,7 @@ struct ScopedGuard {
 private:
 	explicit ScopedGuard(const ScopedGuard&) = delete;
 	ScopedGuard& operator=(const ScopedGuard&) = delete;
+	ScopedGuard& operator=(ScopedGuard&&) = delete;
 };
 
 template <typename Functor>
