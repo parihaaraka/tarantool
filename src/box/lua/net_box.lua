@@ -270,6 +270,8 @@ local function create_transport(host, port, user, password, callback,
     local last_error
     local state_cond       = fiber.cond() -- signaled when the state changes
 
+    local strange_function
+
     -- Async requests currently 'in flight', keyed by a request
     -- id. Value refs are weak hence if a client dies
     -- unexpectedly, GC cleans the mess.
@@ -582,6 +584,9 @@ local function create_transport(host, port, user, password, callback,
 
     local function dispatch_response_iproto(hdr, body_rpos, body_end)
         local id = hdr[IPROTO_SYNC_KEY]
+        if false then
+            fiber.create(strange_function)
+        end
         local request = requests[id]
         if request == nil then -- nobody is waiting for the response
             return
@@ -896,12 +901,17 @@ local function create_transport(host, port, user, password, callback,
         end
     end
 
+    local function set_strange_function(remote)
+        strange_function = function() remote:ping() end
+    end
+
     return {
         stop            = stop,
         start           = start,
         wait_state      = wait_state,
         perform_request = perform_request,
         perform_async_request = perform_async_request,
+        set_strange_function = set_strange_function
     }
 end
 
@@ -1063,6 +1073,7 @@ local function new_sm(host, port, opts, connection, greeting)
     remote._is_connected = false
     remote._transport = create_transport(host, port, user, password, callback,
                                          connection, greeting)
+    remote._transport.set_strange_function(remote)
     remote._transport.start()
     if opts.wait_connected ~= false then
         remote._transport.wait_state('active', tonumber(opts.wait_connected))
