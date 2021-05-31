@@ -18,7 +18,7 @@ jobs:
         github.event.pull_request.head.repo.full_name != github.repository ) &&
         ! endsWith(github.ref, '-notest')
 
-    runs-on: macos-11.0
+    runs-on: macos-m1-11.2
 
     strategy:
       fail-fast: false
