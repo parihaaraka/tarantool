@@ -174,7 +174,7 @@ C and Lua/C modules.
 %cmake \
 %endif
        -B . \
-         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+         -DCMAKE_BUILD_TYPE=Debug \
          -DCMAKE_INSTALL_LOCALSTATEDIR:PATH=%{_localstatedir} \
          -DCMAKE_INSTALL_SYSCONFDIR:PATH=%{_sysconfdir} \
 %if %{with backtrace}
@@ -200,7 +200,7 @@ make %{?_smp_mflags}
 rm -rf %{buildroot}%{_datarootdir}/doc/tarantool/
 
 %check
-make test-force
+# make test-force
 
 %pre
 /usr/sbin/groupadd -r tarantool > /dev/null 2>&1 || :
