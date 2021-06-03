@@ -41,7 +41,7 @@ extern "C" {
 #include <coro.h>
 
 char *
-backtrace(char *start, size_t size);
+backtrace_to_buf(char *start, size_t size);
 
 void print_backtrace(void);
 

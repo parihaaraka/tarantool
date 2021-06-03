@@ -46,6 +46,11 @@
 #ifdef ENABLE_BACKTRACE
 #include <libunwind.h>
 
+#ifdef TARGET_OS_DARWIN
+#include <execinfo.h>
+#include <dlfcn.h>
+#endif
+
 #include "small/region.h"
 #include "small/static.h"
 /*
@@ -131,7 +136,7 @@ error:
 }
 
 char *
-backtrace(char *start, size_t size)
+backtrace_to_buf(char *start, size_t size)
 {
 	int frame_no = 0;
 	unw_word_t sp = 0, old_sp = 0, ip, offset;
@@ -442,7 +447,11 @@ void
 fast_trace_collect(void **ip_buf, int limit)
 {
 	memset(ip_buf, 0, limit * sizeof(*ip_buf));
+#ifndef TARGET_OS_DARWIN
 	unw_backtrace(ip_buf, limit);
+#else
+	backtrace(ip_buf, limit);
+#endif
 }
 
 /**
@@ -459,12 +468,12 @@ fast_trace_collect(void **ip_buf, int limit)
 void
 fast_trace_foreach(backtrace_cb cb, void **ip_buf, int limit, void *cb_ctx)
 {
+#ifndef TARGET_OS_DARWIN
 	static __thread char proc_name[BACKTRACE_NAME_MAX];
-	int frame_no = 0;
+	char* proc = NULL;
+	int frame_no = 0, ret = 0;
 	unw_word_t ip = 0, offset = 0;
 	unw_proc_info_t pi;
-	int ret = 0;
-	char* proc = NULL;
 
 	unw_accessors_t* acc = unw_get_accessors(unw_local_addr_space);
 	assert(acc);
@@ -489,11 +498,26 @@ fast_trace_foreach(backtrace_cb cb, void **ip_buf, int limit, void *cb_ctx)
 			break;
 	}
 
-#ifndef TARGET_OS_DARWIN
 	if (ret != 0)
 		say_debug("unwinding error: %s", unw_strerror(ret));
 #else
-	if (ret != 0)
+	int frame_no = 0, ret = 1;
+	void *ip = NULL;
+	size_t offset = 0;
+	Dl_info dli;
+
+	for (frame_no = 0; frame_no < limit && ip_buf[frame_no] != NULL;
+	     ++frame_no) {
+		ip = ip_buf[frame_no];
+		ret = dladdr(ip, &dli);
+		offset = (char *)ip - (char *)dli.dli_saddr;
+
+		if (frame_no > 0 &&
+		    cb(frame_no - 1, ip, dli.dli_sname, offset, cb_ctx) != 0)
+			break;
+	}
+
+	if (ret == 0)
 		say_debug("unwinding error: %i", ret);
 #endif
 }
@@ -502,7 +526,7 @@ void
 print_backtrace(void)
 {
 	char *start = (char *)static_alloc(SMALL_STATIC_SIZE);
-	fdprintf(STDERR_FILENO, "%s", backtrace(start, SMALL_STATIC_SIZE));
+	fdprintf(STDERR_FILENO, "%s", backtrace_to_buf(start, SMALL_STATIC_SIZE));
 }
 #endif /* ENABLE_BACKTRACE */
 

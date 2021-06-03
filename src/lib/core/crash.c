@@ -213,7 +213,7 @@ crash_collect(int signo, siginfo_t *siginfo, void *ucontext)
 
 #ifdef ENABLE_BACKTRACE
 	char *start = cinfo->backtrace_buf;
-	backtrace(start, sizeof(cinfo->backtrace_buf));
+	backtrace_to_buf(start, sizeof(cinfo->backtrace_buf));
 #endif
 
 #ifdef HAS_GREG
