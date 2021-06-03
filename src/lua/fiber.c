@@ -308,6 +308,15 @@ lbox_fiber_statof_map(struct fiber *f, void *cb_ctx, bool backtrace)
 		backtrace_foreach(fiber_backtrace_cb,
 				  f != fiber() ? &f->ctx : NULL, &tb_ctx);
 		lua_settable(L, -3);
+
+		tb_ctx.lua_frame = 0;
+		tb_ctx.tb_frame = 0;
+		tb_ctx.R = NULL;
+		lua_pushstring(L, "backtrace_parent");
+		lua_newtable(L);
+		fast_trace_foreach(fiber_backtrace_cb, f->parent_bt_ip_buf,
+		     		   FIBER_PARENT_BT_MAX, &tb_ctx);
+		lua_settable(L, -3);
 #endif /* ENABLE_BACKTRACE */
 	}
 	return 0;

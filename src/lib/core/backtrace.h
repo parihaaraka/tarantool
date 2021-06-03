@@ -55,6 +55,12 @@ backtrace_foreach(backtrace_cb cb, coro_context *coro_ctx, void *cb_ctx);
 void
 backtrace_proc_cache_clear(void);
 
+void
+fast_trace_collect(void **ip_buf, int limit);
+
+void
+fast_trace_foreach(backtrace_cb cb, void **ip_buf, int limit, void *cb_ctx);
+
 #endif /* ENABLE_BACKTRACE */
 
 #if defined(__cplusplus)

@@ -111,6 +111,18 @@ struct cpu_stat {
 
 #endif /* ENABLE_FIBER_TOP */
 
+#if ENABLE_BACKTRACE
+
+enum {
+	/**
+	 * Maximum entries count to grab
+	 * from the fiber creation backtrace.
+	 */
+	FIBER_PARENT_BT_MAX = 10
+};
+
+#endif /* ENABLE_BACKTRACE */
+
 enum {
 	/** Both limits include terminating 0. */
 	FIBER_NAME_INLINE = 40,
@@ -640,6 +652,10 @@ struct fiber {
 	 */
 	char *name;
 	char inline_name[FIBER_NAME_INLINE];
+#if ENABLE_BACKTRACE
+	/** Fiber creation backtrace chunk. */
+	void* parent_bt_ip_buf[FIBER_PARENT_BT_MAX];
+#endif /* ENABLE_BACKTRACE */
 };
 
 /** Invoke on_stop triggers and delete them. */
