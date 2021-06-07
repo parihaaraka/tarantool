@@ -443,8 +443,8 @@ out:
  * Must be by far faster than usual backtrace according to the
  * libunwind doc for unw_backtrace().
  */
-void
-fast_trace_collect(void **ip_buf, int limit)
+void NOINLINE
+backtrace_collect_ip(void **ip_buf, int limit)
 {
 	memset(ip_buf, 0, limit * sizeof(*ip_buf));
 #ifndef TARGET_OS_DARWIN
@@ -466,54 +466,57 @@ fast_trace_collect(void **ip_buf, int limit)
  * TODO: to add cache and demangling support
  */
 void
-fast_trace_foreach(backtrace_cb cb, void **ip_buf, int limit, void *cb_ctx)
+backtrace_foreach_ip(backtrace_cb cb, void **ip_buf, int limit,
+		     void *cb_ctx)
 {
 #ifndef TARGET_OS_DARWIN
-	static __thread char proc_name[BACKTRACE_NAME_MAX];
-	char* proc = NULL;
-	int frame_no = 0, ret = 0;
+	char proc_name[BACKTRACE_NAME_MAX];
 	unw_word_t ip = 0, offset = 0;
 	unw_proc_info_t pi;
+	int frame_no, ret = 0;
+	char *proc = NULL;
 
-	unw_accessors_t* acc = unw_get_accessors(unw_local_addr_space);
-	assert(acc);
+	unw_accessors_t *acc = unw_get_accessors(unw_local_addr_space);
 
-	for (frame_no = 0; frame_no < limit && ip_buf[frame_no] != NULL;
-	     ++frame_no) {
+	/*
+	 * RIPs collecting comes from inside a helper routine
+	 * so we skip the collector function address itself thus
+	 * start fetching functions with frame number = 1.
+	 */
+	for (frame_no = 1; frame_no < limit && ip_buf[frame_no] != NULL;
+	     frame_no++) {
 		ip = (unw_word_t)ip_buf[frame_no];
+
 		if (acc->get_proc_name == NULL) {
 			ret = unw_get_proc_info_by_ip(unw_local_addr_space,
 						      ip, &pi, NULL);
 			offset = ip - pi.start_ip;
 		} else {
 			ret = acc->get_proc_name(unw_local_addr_space, ip,
-			    			 proc_name, sizeof(proc_name),
-			    			 &offset, NULL);
+						 proc_name, sizeof(proc_name),
+						 &offset, NULL);
 			proc = proc_name;
 		}
-
-		if (ret != 0 || (frame_no > 0 &&
-		    cb(frame_no - 1, (void *)ip, proc,
-	 	       (size_t)offset, cb_ctx) != 0))
+		if (ret != 0 || cb(frame_no - 1, (void *)ip, proc,
+				   (size_t)offset, cb_ctx) != 0)
 			break;
 	}
 
 	if (ret != 0)
 		say_debug("unwinding error: %s", unw_strerror(ret));
 #else
-	int frame_no = 0, ret = 1;
+	int frame_no, ret = 1;
 	void *ip = NULL;
 	size_t offset = 0;
 	Dl_info dli;
 
-	for (frame_no = 0; frame_no < limit && ip_buf[frame_no] != NULL;
+	for (frame_no = 1; frame_no < limit && ip_buf[frame_no] != NULL;
 	     ++frame_no) {
 		ip = ip_buf[frame_no];
 		ret = dladdr(ip, &dli);
 		offset = (char *)ip - (char *)dli.dli_saddr;
 
-		if (frame_no > 0 &&
-		    cb(frame_no - 1, ip, dli.dli_sname, offset, cb_ctx) != 0)
+		if (cb(frame_no - 1, ip, dli.dli_sname, offset, cb_ctx) != 0)
 			break;
 	}
 

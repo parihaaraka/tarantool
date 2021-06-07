@@ -1265,7 +1265,7 @@ fiber_new_ex(const char *name, const struct fiber_attr *fiber_attr,
 	fiber->fid = cord->next_fid;
 	fiber_set_name(fiber, name);
 #if ENABLE_BACKTRACE
-	fast_trace_collect(fiber->parent_bt_ip_buf, FIBER_PARENT_BT_MAX);
+	backtrace_collect_ip(fiber->parent_bt_ip_buf, FIBER_PARENT_BT_MAX);
 #endif /* ENABLE_BACKTRACE */
 	register_fid(fiber);
 	fiber->csw = 0;

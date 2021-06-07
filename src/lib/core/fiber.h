@@ -654,7 +654,7 @@ struct fiber {
 	char inline_name[FIBER_NAME_INLINE];
 #if ENABLE_BACKTRACE
 	/** Fiber creation backtrace chunk. */
-	void* parent_bt_ip_buf[FIBER_PARENT_BT_MAX];
+	void *parent_bt_ip_buf[FIBER_PARENT_BT_MAX];
 #endif /* ENABLE_BACKTRACE */
 };
 
