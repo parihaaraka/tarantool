@@ -241,6 +241,8 @@ enum iproto_type {
 	IPROTO_RAFT = 30,
 	/** PROMOTE request. */
 	IPROTO_PROMOTE = 31,
+	/** DEMOTE request. */
+	IPROTO_DEMOTE = 32,
 
 	/** A confirmation message for synchronous transactions. */
 	IPROTO_CONFIRM = 40,
@@ -312,6 +314,8 @@ iproto_type_name(uint16_t type)
 		return "RAFT";
 	case IPROTO_PROMOTE:
 		return "PROMOTE";
+	case IPROTO_DEMOTE:
+		return "DEMOTE";
 	case IPROTO_CONFIRM:
 		return "CONFIRM";
 	case IPROTO_ROLLBACK:
@@ -366,14 +370,14 @@ static inline bool
 iproto_type_is_synchro_request(uint16_t type)
 {
 	return type == IPROTO_CONFIRM || type == IPROTO_ROLLBACK ||
-	       type == IPROTO_PROMOTE;
+	       type == IPROTO_PROMOTE || type == IPROTO_DEMOTE;
 }
 
-/** PROMOTE entry (synchronous replication and leader elections). */
+/** PROMOTE/DEMOTE entry (synchronous replication and leader elections). */
 static inline bool
 iproto_type_is_promote_request(uint32_t type)
 {
-       return type == IPROTO_PROMOTE;
+       return type == IPROTO_PROMOTE || type == IPROTO_DEMOTE;
 }
 
 static inline bool
