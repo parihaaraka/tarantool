@@ -193,6 +193,18 @@ struct lua_fiber_tb_ctx {
 	int tb_frame;
 };
 
+/**
+ * Lua parent traceback context.
+ */
+struct lua_parent_tb_ctx {
+	/* Lua stack to push values. */
+	struct lua_State *L;
+	/* Lua parent backtrace. */
+	struct parent_bt_lua *bt;
+	/* Count of traced frames (both C and Lua). */
+	int tb_frame;
+};
+
 #ifdef ENABLE_BACKTRACE
 static void
 dump_lua_frame(struct lua_State *L, lua_Debug *ar, int tb_frame)
@@ -201,6 +213,22 @@ dump_lua_frame(struct lua_State *L, lua_Debug *ar, int tb_frame)
 	snprintf(buf, sizeof(buf), "%s in %s at line %i",
 		 ar->name != NULL ? ar->name : "(unnamed)",
 		 ar->source, ar->currentline);
+	lua_pushnumber(L, tb_frame);
+	lua_newtable(L);
+	lua_pushstring(L, "L");
+	lua_pushstring(L, buf);
+	lua_settable(L, -3);
+	lua_settable(L, -3);
+}
+
+static void
+dump_parent_lua_frame(struct lua_State *L, const char *name, const char *src,
+		      int currentline, int tb_frame)
+{
+	char buf[512];
+	snprintf(buf, sizeof(buf), "%s in %s at line %i",
+		 name != NULL ? name : "(unnamed)",
+		 src, currentline);
 	lua_pushnumber(L, tb_frame);
 	lua_newtable(L);
 	lua_pushstring(L, "L");
@@ -260,7 +288,115 @@ fiber_backtrace_cb(int frameno, void *frameret, const char *func, size_t offset,
 	lua_settable(L, -3);
 	return 0;
 }
-#endif
+
+static int
+fiber_parent_backtrace_cb(int frameno, void *frameret, const char *func,
+			  size_t offset, void *cb_ctx)
+{
+	int lua_frame = 0;
+	struct lua_parent_tb_ctx *tb_ctx = (struct lua_parent_tb_ctx *)cb_ctx;
+	struct parent_bt_lua *bt = tb_ctx->bt;
+	struct lua_State *L = tb_ctx->L;
+	/*
+	 * There is impossible to get func == NULL until
+	 * https://github.com/tarantool/tarantool/issues/5326
+	 * will not resolved, but is possible afterwards.
+	 */
+	if (bt != NULL && func != NULL && strstr(func, "lj_BC_FUNCC") == func) {
+		/* We are in the LUA vm. */
+		while (lua_frame < bt->cnt) {
+			tb_ctx->tb_frame++;
+			dump_parent_lua_frame(L, bt->names[lua_frame],
+					      bt->sources[lua_frame],
+					      bt->lines[lua_frame],
+					      tb_ctx->tb_frame);
+			lua_frame++;
+		}
+	}
+	char buf[512];
+	int l = snprintf(buf, sizeof(buf), "#%-2d %p in ", frameno, frameret);
+	if (func)
+		snprintf(buf + l, sizeof(buf) - l, "%s+%zu", func, offset);
+	else
+		snprintf(buf + l, sizeof(buf) - l, "?");
+	tb_ctx->tb_frame++;
+	lua_pushnumber(L, tb_ctx->tb_frame);
+	lua_newtable(L);
+	lua_pushstring(L, "C");
+	lua_pushstring(L, buf);
+	lua_settable(L, -3);
+	lua_settable(L, -3);
+	return 0;
+}
+
+static int
+fiber_parent_bt_init(struct fiber *f, struct lua_State *L)
+{
+	int lua_frame = 0, tb_frame = 0;
+	lua_Debug ar;
+	struct parent_bt_lua *bt = NULL;
+
+	bt = (struct parent_bt_lua *)malloc(sizeof(*bt));
+	if (bt == NULL){
+		diag_set(OutOfMemory, sizeof(*bt), "malloc", "bt");
+		return 1;
+	}
+
+	while (tb_frame < PARENT_BT_LUA_LEN_MAX &&
+	       lua_getstack(L, lua_frame, &ar) > 0) {
+		/* Skip all following C-frames. */
+		lua_getinfo(L, "Sln", &ar);
+		if (*ar.what != 'C')
+			break;
+		if (ar.name != NULL) {
+			/* Dump frame if it is a C built-in call. */
+			bt->lines[tb_frame] = ar.currentline;
+			memset(bt->names[tb_frame], 0,
+			       PARENT_BT_LUA_NAME_MAX);
+			strncpy(bt->names[tb_frame], ar.name,
+				PARENT_BT_LUA_NAME_MAX - 1);
+			memset(bt->sources[tb_frame], 0,
+			       PARENT_BT_LUA_NAME_MAX);
+			strncpy(bt->sources[tb_frame], ar.source,
+				PARENT_BT_LUA_NAME_MAX - 1);
+			tb_frame++;
+		}
+		lua_frame++;
+	}
+	while (tb_frame < PARENT_BT_LUA_LEN_MAX &&
+	       lua_getstack(L, lua_frame, &ar) > 0) {
+		/* Trace Lua frame. */
+		lua_getinfo(L, "Sln", &ar);
+		if (*ar.what == 'C')
+			break;
+		bt->lines[tb_frame] = ar.currentline;
+		memset(bt->names[tb_frame], 0, PARENT_BT_LUA_NAME_MAX);
+		if (ar.name != NULL) {
+			strncpy(bt->names[tb_frame], ar.name,
+				PARENT_BT_LUA_NAME_MAX - 1);
+		} else {
+			strncpy(bt->names[tb_frame], "(unnamed)",
+				PARENT_BT_LUA_NAME_MAX - 1);
+		}
+		memset(bt->sources[tb_frame], 0, PARENT_BT_LUA_NAME_MAX);
+		strncpy(bt->sources[tb_frame], ar.source,
+			PARENT_BT_LUA_NAME_MAX - 1);
+		tb_frame++;
+		lua_frame++;
+	}
+
+	bt->cnt = tb_frame;
+	f->storage.lua.parent_bt = bt;
+
+	return 0;
+}
+
+static void
+fiber_parent_bt_free(struct fiber *f)
+{
+	free(f->storage.lua.parent_bt);
+}
+#endif /* ENABLE_BACKTRACE */
 
 static int
 lbox_fiber_statof_map(struct fiber *f, void *cb_ctx, bool backtrace)
@@ -299,6 +435,7 @@ lbox_fiber_statof_map(struct fiber *f, void *cb_ctx, bool backtrace)
 	if (backtrace) {
 #ifdef ENABLE_BACKTRACE
 		struct lua_fiber_tb_ctx tb_ctx;
+		struct lua_parent_tb_ctx parent_tb_ctx;
 		tb_ctx.L = L;
 		tb_ctx.R = f->storage.lua.stack;
 		tb_ctx.lua_frame = 0;
@@ -309,14 +446,14 @@ lbox_fiber_statof_map(struct fiber *f, void *cb_ctx, bool backtrace)
 				  f != fiber() ? &f->ctx : NULL, &tb_ctx);
 		lua_settable(L, -3);
 
-		tb_ctx.lua_frame = 0;
-		tb_ctx.tb_frame = 0;
-		tb_ctx.R = NULL;
+		parent_tb_ctx.L = L;
+		parent_tb_ctx.bt = f->storage.lua.parent_bt;
+		parent_tb_ctx.tb_frame = 0;
 		lua_pushstring(L, "backtrace_parent");
 		lua_newtable(L);
-		backtrace_foreach_ip(fiber_backtrace_cb,
+		backtrace_foreach_ip(fiber_parent_backtrace_cb,
 				     f->parent_bt_ip_buf,
-				     FIBER_PARENT_BT_MAX, &tb_ctx);
+				     FIBER_PARENT_BT_MAX, &parent_tb_ctx);
 		lua_settable(L, -3);
 #endif /* ENABLE_BACKTRACE */
 	}
@@ -481,10 +618,14 @@ lua_fiber_run_f(MAYBE_UNUSED va_list ap)
 	 * We can unref child stack here,
 	 * otherwise we have to unref child stack in join
 	 */
-	if (f->flags & FIBER_IS_JOINABLE)
+	if (f->flags & FIBER_IS_JOINABLE) {
 		lua_pushinteger(L, coro_ref);
-	else
+	} else {
+#ifdef ENABLE_BACKTRACE
+		fiber_parent_bt_free(f);
+#endif
 		luaL_unref(L, LUA_REGISTRYINDEX, coro_ref);
+	}
 
 	return result;
 }
@@ -505,6 +646,11 @@ fiber_create(struct lua_State *L)
 		luaL_unref(L, LUA_REGISTRYINDEX, coro_ref);
 		luaT_error(L);
 	}
+
+#ifdef ENABLE_BACKTRACE
+	// TODO: error handling
+	fiber_parent_bt_init(f, L);
+#endif
 
 	/* Move the arguments to the new coro */
 	lua_xmove(L, child_L, lua_gettop(L));
@@ -886,8 +1032,12 @@ lbox_fiber_join(struct lua_State *L)
 			lua_xmove(child_L, L, num_ret);
 		}
 	}
-	if (child_L != NULL)
+	if (child_L != NULL) {
+#ifdef ENABLE_BACKTRACE
+		fiber_parent_bt_free(fiber);
+#endif
 		luaL_unref(L, LUA_REGISTRYINDEX, coro_ref);
+	}
 	return num_ret + 1;
 }
 

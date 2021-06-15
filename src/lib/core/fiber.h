@@ -528,6 +528,7 @@ struct txn;
 struct credentials;
 struct lua_State;
 struct ipc_wait_pad;
+struct parent_bt_lua;
 
 struct fiber {
 	coro_context ctx;
@@ -634,6 +635,12 @@ struct fiber {
 			 * Optional fiber.storage Lua reference.
 			 */
 			int ref;
+#if ENABLE_BACKTRACE
+			/**
+			 * Lua parent backtrace (may be NULL)
+			 */
+			struct parent_bt_lua *parent_bt;
+#endif /* ENABLE_BACKTRACE */
 		} lua;
 		/**
 		 * Iproto sync.
