@@ -878,6 +878,17 @@ void
 fiber_top_disable(void);
 #endif /* ENABLE_FIBER_TOP */
 
+#if ENABLE_BACKTRACE
+bool
+fiber_parent_bt_is_enabled(void);
+
+void
+fiber_parent_bt_enable(void);
+
+void
+fiber_parent_bt_disable(void);
+#endif /* ENABLE_BACKTRACE */
+
 /** Useful for C unit tests */
 static inline int
 fiber_c_invoke(fiber_func f, va_list ap)

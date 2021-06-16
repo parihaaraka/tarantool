@@ -205,7 +205,7 @@ struct lua_parent_tb_ctx {
 	int tb_frame;
 };
 
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 static void
 dump_lua_frame(struct lua_State *L, lua_Debug *ar, int tb_frame)
 {
@@ -433,7 +433,7 @@ lbox_fiber_statof_map(struct fiber *f, void *cb_ctx, bool backtrace)
 	lua_settable(L, -3);
 
 	if (backtrace) {
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 		struct lua_fiber_tb_ctx tb_ctx;
 		struct lua_parent_tb_ctx parent_tb_ctx;
 		tb_ctx.L = L;
@@ -446,15 +446,18 @@ lbox_fiber_statof_map(struct fiber *f, void *cb_ctx, bool backtrace)
 				  f != fiber() ? &f->ctx : NULL, &tb_ctx);
 		lua_settable(L, -3);
 
-		parent_tb_ctx.L = L;
-		parent_tb_ctx.bt = f->storage.lua.parent_bt;
-		parent_tb_ctx.tb_frame = 0;
-		lua_pushstring(L, "backtrace_parent");
-		lua_newtable(L);
-		backtrace_foreach_ip(fiber_parent_backtrace_cb,
-				     f->parent_bt_ip_buf,
-				     FIBER_PARENT_BT_MAX, &parent_tb_ctx);
-		lua_settable(L, -3);
+		if (fiber_parent_bt_is_enabled()) {
+			parent_tb_ctx.L = L;
+			parent_tb_ctx.bt = f->storage.lua.parent_bt;
+			parent_tb_ctx.tb_frame = 0;
+			lua_pushstring(L, "backtrace_parent");
+			lua_newtable(L);
+			backtrace_foreach_ip(fiber_parent_backtrace_cb,
+					     f->parent_bt_ip_buf,
+					     FIBER_PARENT_BT_MAX, 
+					     &parent_tb_ctx);
+			lua_settable(L, -3);
+		}
 #endif /* ENABLE_BACKTRACE */
 	}
 	return 0;
@@ -471,7 +474,7 @@ lbox_fiber_statof(struct fiber *f, void *cb_ctx, bool backtrace)
 	return 0;
 }
 
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 static int
 lbox_fiber_statof_bt(struct fiber *f, void *cb_ctx)
 {
@@ -560,7 +563,7 @@ lbox_fiber_top_disable(struct lua_State *L)
 }
 #endif /* ENABLE_FIBER_TOP */
 
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 bool
 lbox_do_backtrace(struct lua_State *L)
 {
@@ -578,6 +581,22 @@ lbox_do_backtrace(struct lua_State *L)
 	}
 	return true;
 }
+
+static int
+lbox_fiber_parent_bt_enable(struct lua_State *L)
+{
+	(void) L;
+	fiber_parent_bt_enable();
+	return 0;
+}
+
+static int
+lbox_fiber_parent_bt_disable(struct lua_State *L)
+{
+	(void) L;
+	fiber_parent_bt_disable();
+	return 0;
+}
 #endif /* ENABLE_BACKTRACE */
 
 /**
@@ -586,7 +605,7 @@ lbox_do_backtrace(struct lua_State *L)
 static int
 lbox_fiber_info(struct lua_State *L)
 {
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 	bool do_backtrace = lbox_do_backtrace(L);
 	if (do_backtrace) {
 		lua_newtable(L);
@@ -621,7 +640,7 @@ lua_fiber_run_f(MAYBE_UNUSED va_list ap)
 	if (f->flags & FIBER_IS_JOINABLE) {
 		lua_pushinteger(L, coro_ref);
 	} else {
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 		fiber_parent_bt_free(f);
 #endif
 		luaL_unref(L, LUA_REGISTRYINDEX, coro_ref);
@@ -647,9 +666,10 @@ fiber_create(struct lua_State *L)
 		luaT_error(L);
 	}
 
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 	// TODO: error handling
-	fiber_parent_bt_init(f, L);
+	if (fiber_parent_bt_is_enabled())
+		fiber_parent_bt_init(f, L);
 #endif
 
 	/* Move the arguments to the new coro */
@@ -748,7 +768,7 @@ lbox_fiber_object_info(struct lua_State *L)
 	struct fiber *f = lbox_get_fiber(L);
 	if (f == NULL)
 		luaL_error(L, "the fiber is dead");
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 	bool do_backtrace = lbox_do_backtrace(L);
 	if (do_backtrace) {
 		lua_newtable(L);
@@ -1033,7 +1053,7 @@ lbox_fiber_join(struct lua_State *L)
 		}
 	}
 	if (child_L != NULL) {
-#ifdef ENABLE_BACKTRACE
+#if ENABLE_BACKTRACE
 		fiber_parent_bt_free(fiber);
 #endif
 		luaL_unref(L, LUA_REGISTRYINDEX, coro_ref);
@@ -1091,6 +1111,10 @@ static const struct luaL_Reg fiberlib[] = {
 	{"top_enable", lbox_fiber_top_enable},
 	{"top_disable", lbox_fiber_top_disable},
 #endif /* ENABLE_FIBER_TOP */
+#if ENABLE_BACKTRACE
+	{"parent_bt_enable", lbox_fiber_parent_bt_enable},
+	{"parent_bt_disable", lbox_fiber_parent_bt_disable},
+#endif /* ENABLE_BACKTRACE */
 	{"sleep", lbox_fiber_sleep},
 	{"yield", lbox_fiber_yield},
 	{"self", lbox_fiber_self},

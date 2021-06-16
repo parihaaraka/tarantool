@@ -220,6 +220,10 @@ fiber_mprotect(void *addr, size_t len, int prot)
 static __thread bool fiber_top_enabled = false;
 #endif /* ENABLE_FIBER_TOP */
 
+#if ENABLE_BACKTRACE
+static __thread bool fiber_parent_bt_enabled = false;
+#endif /* ENABLE_BACKTRACE */
+
 /**
  * An action performed each time a context switch happens.
  * Used to count each fiber's processing time.
@@ -1413,6 +1417,26 @@ fiber_top_disable(void)
 	}
 }
 #endif /* ENABLE_FIBER_TOP */
+
+#if ENABLE_BACKTRACE
+bool
+fiber_parent_bt_is_enabled(void)
+{
+	return fiber_parent_bt_enabled;
+}
+
+void
+fiber_parent_bt_enable(void)
+{
+	fiber_parent_bt_enabled = true;
+}
+
+void
+fiber_parent_bt_disable(void)
+{
+	fiber_parent_bt_enabled = false;
+}
+#endif /* ENABLE_BACKTRACE */
 
 size_t
 box_region_used(void)
