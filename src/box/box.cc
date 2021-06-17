@@ -3513,7 +3513,7 @@ box_cfg_xc(void)
 
 	if (!is_bootstrap_leader) {
 		replicaset_sync();
-	} else {
+	} else if (raft_is_enabled(box_raft())) {
 		/*
 		 * When the cluster is just bootstrapped and this instance is a
 		 * leader, it makes no sense to wait for a leader appearance.
