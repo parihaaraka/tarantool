@@ -1581,6 +1581,17 @@ box_check_promote_term_changed(uint64_t promote_term)
 	return 0;
 }
 
+/** Trigger a new election round but don't wait for its result. */
+static int
+box_trigger_elections(void)
+{
+	uint64_t promote_term = txn_limbo.promote_greatest_term;
+	raft_new_term(box_raft());
+	if (box_raft_wait_term_persisted() < 0)
+		return -1;
+	return box_check_promote_term_changed(promote_term);
+}
+
 /** Try waiting until limbo is emptied up to given timeout. */
 static int
 box_try_wait_confirm(double timeout)
@@ -1731,9 +1742,12 @@ box_promote(void)
 
 	if (run_elections && box_run_elections() < 0)
 		return -1;
-	if (try_wait &&
-	    box_try_wait_confirm(2 * replication_synchro_timeout) < 0)
-		return -1;
+	if (try_wait) {
+		if (box_try_wait_confirm(2 * replication_synchro_timeout) < 0)
+			return -1;
+		if (box_trigger_elections() < 0)
+			return -1;
+	}
 	if ((wait_lsn = box_wait_limbo_acked()) < 0)
 		return -1;
 
