@@ -278,6 +278,8 @@ struct errcode_record {
 	/*223 */_(ER_INTERFERING_PROMOTE,	"Instance with replica id %u was promoted first") \
 	/*224 */_(ER_RAFT_DISABLED,		"Elections were turned off while running box.ctl.promote()")\
 	/*225 */_(ER_TXN_ROLLBACK,		"Transaction was rolled back") \
+	/*226 */_(ER_SYNC_QUEUE_UNCLAIMED,	"The synchronous transaction queue doesn't belong to any instance")\
+	/*227 */_(ER_SYNC_QUEUE_FOREIGN,	"The synchronous transaction queue belongs to other instance with id %u")\
 
 /*
  * !IMPORTANT! Please follow instructions at start of the file
