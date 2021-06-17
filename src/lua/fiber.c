@@ -205,20 +205,55 @@ struct lua_parent_tb_ctx {
 	int tb_frame;
 };
 
+/** Lua backtrace callback type */
+typedef int (lua_backtrace_cb)(struct lua_Debug *ar, int frame_no, void *cb_ctx);
+
 #if ENABLE_BACKTRACE
-static void
-dump_lua_frame(struct lua_State *L, lua_Debug *ar, int tb_frame)
+static int
+dump_lua_frame(lua_Debug *ar, int tb_frame, void *cb_ctx)
 {
+	(void) tb_frame;
+	struct lua_fiber_tb_ctx *tb_ctx = (struct lua_fiber_tb_ctx *)cb_ctx;
+	struct lua_State *L = tb_ctx->L;
 	char buf[512];
+
+	tb_ctx->tb_frame++;
 	snprintf(buf, sizeof(buf), "%s in %s at line %i",
 		 ar->name != NULL ? ar->name : "(unnamed)",
 		 ar->source, ar->currentline);
-	lua_pushnumber(L, tb_frame);
+	lua_pushnumber(L, tb_ctx->tb_frame);
 	lua_newtable(L);
 	lua_pushstring(L, "L");
 	lua_pushstring(L, buf);
 	lua_settable(L, -3);
 	lua_settable(L, -3);
+
+	return 0;
+}
+
+static int
+save_lua_frame(lua_Debug *ar, int tb_frame, void *cb_ctx)
+{
+	struct parent_bt_lua *bt = (struct parent_bt_lua *)cb_ctx;
+
+	if (tb_frame > PARENT_BT_LUA_NAME_MAX - 1)
+		return 1;
+
+	bt->cnt++;
+	bt->lines[tb_frame] = ar->currentline;
+	memset(bt->names[tb_frame], 0, PARENT_BT_LUA_NAME_MAX);
+	if (ar->name != NULL) {
+		strncpy(bt->names[tb_frame], ar->name,
+			PARENT_BT_LUA_NAME_MAX - 1);
+	} else {
+		strncpy(bt->names[tb_frame], "(unnamed)",
+			PARENT_BT_LUA_NAME_MAX - 1);
+	}
+	memset(bt->sources[tb_frame], 0, PARENT_BT_LUA_NAME_MAX);
+	strncpy(bt->sources[tb_frame], ar->source,
+		PARENT_BT_LUA_NAME_MAX - 1);
+
+	return 0;
 }
 
 static void
@@ -237,6 +272,36 @@ dump_parent_lua_frame(struct lua_State *L, const char *name, const char *src,
 	lua_settable(L, -3);
 }
 
+static void
+lua_backtrace_foreach(struct lua_State *L, lua_backtrace_cb cb, void *cb_ctx)
+{
+	int lua_frame = 0, tb_frame = 0;
+	lua_Debug ar;
+	while (lua_getstack(L, lua_frame, &ar) > 0) {
+		/* Skip all following C-frames. */
+		lua_getinfo(L, "Sln", &ar);
+		if (*ar.what != 'C')
+			break;
+		if (ar.name != NULL) {
+			/* Dump frame if it is a C built-in call. */
+			if (cb(&ar, tb_frame, cb_ctx) != 0)
+				return;
+			tb_frame++;
+		}
+		lua_frame++;
+	}
+	while (lua_getstack(L, lua_frame, &ar) > 0) {
+		/* Trace Lua frame. */
+		lua_getinfo(L, "Sln", &ar);
+		if (*ar.what == 'C')
+			break;
+		if (cb(&ar, tb_frame, cb_ctx) != 0)
+			return;
+		tb_frame++;
+		lua_frame++;
+	}
+}
+
 static int
 fiber_backtrace_cb(int frameno, void *frameret, const char *func, size_t offset, void *cb_ctx)
 {
@@ -247,31 +312,9 @@ fiber_backtrace_cb(int frameno, void *frameret, const char *func, size_t offset,
 	 * https://github.com/tarantool/tarantool/issues/5326
 	 * will not resolved, but is possible afterwards.
 	 */
-	if (func != NULL && strstr(func, "lj_BC_FUNCC") == func) {
+	if (func != NULL && tb_ctx->R && strstr(func, "lj_BC_FUNCC") == func) {
 		/* We are in the LUA vm. */
-		lua_Debug ar;
-		while (tb_ctx->R && lua_getstack(tb_ctx->R, tb_ctx->lua_frame, &ar) > 0) {
-			/* Skip all following C-frames. */
-			lua_getinfo(tb_ctx->R, "Sln", &ar);
-			if (*ar.what != 'C')
-				break;
-			if (ar.name != NULL) {
-				/* Dump frame if it is a C built-in call. */
-				tb_ctx->tb_frame++;
-				dump_lua_frame(L, &ar, tb_ctx->tb_frame);
-			}
-			tb_ctx->lua_frame++;
-		}
-		while (tb_ctx->R && lua_getstack(tb_ctx->R, tb_ctx->lua_frame, &ar) > 0) {
-			/* Trace Lua frame. */
-			lua_getinfo(tb_ctx->R, "Sln", &ar);
-			if (*ar.what == 'C') {
-				break;
-			}
-			tb_ctx->tb_frame++;
-			dump_lua_frame(L, &ar, tb_ctx->tb_frame);
-			tb_ctx->lua_frame++;
-		}
+		lua_backtrace_foreach(tb_ctx->R, dump_lua_frame, tb_ctx);
 	}
 	char buf[512];
 	int l = snprintf(buf, sizeof(buf), "#%-2d %p in ", frameno, frameret);
@@ -332,60 +375,14 @@ fiber_parent_backtrace_cb(int frameno, void *frameret, const char *func,
 static int
 fiber_parent_bt_init(struct fiber *f, struct lua_State *L)
 {
-	int lua_frame = 0, tb_frame = 0;
-	lua_Debug ar;
-	struct parent_bt_lua *bt = NULL;
-
-	bt = (struct parent_bt_lua *)malloc(sizeof(*bt));
+	struct parent_bt_lua *bt = (struct parent_bt_lua *)malloc(sizeof(*bt));
 	if (bt == NULL){
 		diag_set(OutOfMemory, sizeof(*bt), "malloc", "bt");
 		return 1;
 	}
 
-	while (tb_frame < PARENT_BT_LUA_LEN_MAX &&
-	       lua_getstack(L, lua_frame, &ar) > 0) {
-		/* Skip all following C-frames. */
-		lua_getinfo(L, "Sln", &ar);
-		if (*ar.what != 'C')
-			break;
-		if (ar.name != NULL) {
-			/* Dump frame if it is a C built-in call. */
-			bt->lines[tb_frame] = ar.currentline;
-			memset(bt->names[tb_frame], 0,
-			       PARENT_BT_LUA_NAME_MAX);
-			strncpy(bt->names[tb_frame], ar.name,
-				PARENT_BT_LUA_NAME_MAX - 1);
-			memset(bt->sources[tb_frame], 0,
-			       PARENT_BT_LUA_NAME_MAX);
-			strncpy(bt->sources[tb_frame], ar.source,
-				PARENT_BT_LUA_NAME_MAX - 1);
-			tb_frame++;
-		}
-		lua_frame++;
-	}
-	while (tb_frame < PARENT_BT_LUA_LEN_MAX &&
-	       lua_getstack(L, lua_frame, &ar) > 0) {
-		/* Trace Lua frame. */
-		lua_getinfo(L, "Sln", &ar);
-		if (*ar.what == 'C')
-			break;
-		bt->lines[tb_frame] = ar.currentline;
-		memset(bt->names[tb_frame], 0, PARENT_BT_LUA_NAME_MAX);
-		if (ar.name != NULL) {
-			strncpy(bt->names[tb_frame], ar.name,
-				PARENT_BT_LUA_NAME_MAX - 1);
-		} else {
-			strncpy(bt->names[tb_frame], "(unnamed)",
-				PARENT_BT_LUA_NAME_MAX - 1);
-		}
-		memset(bt->sources[tb_frame], 0, PARENT_BT_LUA_NAME_MAX);
-		strncpy(bt->sources[tb_frame], ar.source,
-			PARENT_BT_LUA_NAME_MAX - 1);
-		tb_frame++;
-		lua_frame++;
-	}
-
-	bt->cnt = tb_frame;
+	bt->cnt = 0;
+	lua_backtrace_foreach(L, save_lua_frame, bt);
 	f->storage.lua.parent_bt = bt;
 
 	return 0;
