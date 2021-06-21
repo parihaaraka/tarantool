@@ -48,6 +48,28 @@ extern void cord_on_yield(void);
 #if ENABLE_BACKTRACE
 #include "backtrace.h" /* fast_trace */
 
+#if ENABLE_C_FULL_TRACE
+static int
+backtrace_init_cb(int frameno, void *frameret,
+		  const char *func, size_t offset, void *cb_ctx)
+{
+	(void) frameret;
+	struct fiber *f = (struct fiber *)cb_ctx;
+
+	if (frameno > FIBER_PARENT_BT_MAX - 1)
+		return 1;
+
+	f->parent_bt_offsets[frameno] = (int)offset;
+	memset(f->parent_bt_names[frameno], 0, FIBER_C_BT_NAME_MAX);
+	if (func != NULL) {
+		strncpy(f->parent_bt_names[frameno], func,
+			FIBER_C_BT_NAME_MAX - 1);
+	}
+
+	return 0;
+}
+#endif /* ENABLE_C_FULL_TRACE */
+
 #endif /* ENABLE_BACKTRACE */
 
 #if ENABLE_FIBER_TOP
@@ -1269,7 +1291,21 @@ fiber_new_ex(const char *name, const struct fiber_attr *fiber_attr,
 	fiber->fid = cord->next_fid;
 	fiber_set_name(fiber, name);
 #if ENABLE_BACKTRACE
-	backtrace_collect_ip(fiber->parent_bt_ip_buf, FIBER_PARENT_BT_MAX);
+#if ENABLE_C_FULL_TRACE
+	if (fiber_parent_bt_is_enabled()) {
+		backtrace_foreach(backtrace_init_cb, NULL, fiber);
+	} else {
+		memset(fiber->parent_bt_names, 0,
+		       FIBER_PARENT_BT_MAX * sizeof(fiber->parent_bt_names[0]));
+	}
+#else
+	if (fiber_parent_bt_is_enabled()) {
+		backtrace_collect_ip(fiber->parent_bt_ip_buf, FIBER_PARENT_BT_MAX);
+	} else {
+		memset(fiber->parent_bt_ip_buf, 0,
+		       FIBER_PARENT_BT_MAX * sizeof(fiber->parent_bt_ip_buf[0]));
+	}
+#endif /* ENABLE_C_FULL_TRACE */
 #endif /* ENABLE_BACKTRACE */
 	register_fid(fiber);
 	fiber->csw = 0;

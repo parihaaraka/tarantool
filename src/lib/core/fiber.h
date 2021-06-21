@@ -118,7 +118,9 @@ enum {
 	 * Maximum entries count to grab
 	 * from the fiber creation backtrace.
 	 */
-	FIBER_PARENT_BT_MAX = 10
+	FIBER_PARENT_BT_MAX = 10,
+	FIBER_C_BT_NAME_MAX = 4,
+	FIBER_LUA_BT_NAME_MAX = 4
 };
 
 #endif /* ENABLE_BACKTRACE */
@@ -636,10 +638,13 @@ struct fiber {
 			 */
 			int ref;
 #if ENABLE_BACKTRACE
-			/**
-			 * Lua parent backtrace (may be NULL)
-			 */
-			struct parent_bt_lua *parent_bt;
+#if ENABLE_LUA_FULL_TRACE
+			int parent_bt_lua_lines[FIBER_PARENT_BT_MAX];
+			char parent_bt_lua_names[FIBER_PARENT_BT_MAX][FIBER_LUA_BT_NAME_MAX];
+#else
+			uint32_t parent_bt_lua_pcs[FIBER_PARENT_BT_MAX];
+			int parent_bt_lua_pt_refs[FIBER_PARENT_BT_MAX];
+#endif /* ENABLE_LUA_FULL_TRACE */
 #endif /* ENABLE_BACKTRACE */
 		} lua;
 		/**
@@ -660,8 +665,14 @@ struct fiber {
 	char *name;
 	char inline_name[FIBER_NAME_INLINE];
 #if ENABLE_BACKTRACE
+#if ENABLE_C_FULL_TRACE
+	/** Fiber creation backtrace lines and names. */
+	int parent_bt_offsets[FIBER_PARENT_BT_MAX];
+	char parent_bt_names[FIBER_PARENT_BT_MAX][FIBER_C_BT_NAME_MAX];
+#else
 	/** Fiber creation backtrace chunk. */
 	void *parent_bt_ip_buf[FIBER_PARENT_BT_MAX];
+#endif /* ENABLE_C_FULL_TRACE */
 #endif /* ENABLE_BACKTRACE */
 };
 

@@ -30,6 +30,8 @@
  */
 #include "lua/utils.h"
 #include <lj_trace.h>
+#include <lj_frame.h>
+#include <lj_debug.h>
 
 #include <assert.h>
 #include <errno.h>
@@ -1139,6 +1141,121 @@ lua_State *
 luaT_state(void)
 {
 	return tarantool_L;
+}
+
+/** Copied from the <lj_debug.c> */
+#define NO_BCPOS	(~(BCPos)0)
+
+/** Based on the lua_push...() procedures from the <lj_api.c> */
+void
+luaL_pushproto(struct lua_State *L, GCproto *pt)
+{
+	lj_gc_check(L);
+	setprotoV(L, L->top, pt);
+	incr_top(L);
+}
+
+GCproto *
+luaL_toproto(struct lua_State *L, int idx)
+{
+	GCobj *o = (GCobj *)lua_topointer(L, idx);
+	return gco2pt(o);
+}
+
+int
+luaT_get_func_line(GCproto *pt, BCPos pc)
+{
+	return lj_debug_line(pt, pc);
+}
+
+/** Based on the lj_debug_funcname() from <lj_debug.h> */
+const char *
+luaT_get_func_name(GCproto *pt, BCPos pc, const char **name)
+{
+	if (pc != NO_BCPOS) {
+		const BCIns *ip = &proto_bc(pt)[check_exp(pc < pt->sizebc, pc)];
+		MMS mm = bcmode_mm(bc_op(*ip));
+		if (mm == MM_call) {
+			BCReg slot = bc_a(*ip);
+			if (bc_op(*ip) == BC_ITERC) slot -= 3;
+			return lj_debug_slotname(pt, ip, slot, name);
+		} else if (mm != MM__MAX) {
+			*name = strdata(mmname_str(G(tarantool_L), mm));
+			return "metamethod";
+		}
+	}
+	return NULL;
+}
+
+/** Based on the debug_framepc() from <lj_debug.h> */
+BCPos
+luaT_get_func_pc(lua_State *L, GCfunc *fn, cTValue *nextframe)
+{
+	const BCIns *ins;
+	GCproto *pt;
+	BCPos pos;
+	lua_assert(fn->c.gct == ~LJ_TFUNC || fn->c.gct == ~LJ_TTHREAD);
+	if (!isluafunc(fn)) {  /* Cannot derive a PC for non-Lua functions. */
+		return NO_BCPOS;
+	} else if (nextframe == NULL) {  /* Lua function on top. */
+		void *cf = cframe_raw(L->cframe);
+		if (cf == NULL || (char *)cframe_pc(cf) == (char *)cframe_L(cf))
+			return NO_BCPOS;
+		ins = cframe_pc(cf);  /* Only happens during error/hook handling. */
+	} else {
+		if (frame_islua(nextframe)) {
+			ins = frame_pc(nextframe);
+		} else if (frame_iscont(nextframe)) {
+			ins = frame_contpc(nextframe);
+		} else {
+			/* Lua function below errfunc/gc/hook: skip it. */
+			return NO_BCPOS;
+		}
+	}
+	pt = funcproto(fn);
+	pos = proto_bcpos(pt, ins) - 1;
+#if LJ_HASJIT
+	if (pos > pt->sizebc) {  /* Undo the effects of lj_trace_exit for JLOOP. */
+		GCtrace *T = (GCtrace *)((char *)(ins-1) - offsetof(GCtrace, startins));
+		lua_assert(bc_isret(bc_op(ins[-1])));
+		pos = proto_bcpos(pt, mref(T->startpc, const BCIns));
+	}
+#endif
+	return pos;
+}
+
+/** Based on the lj_debug_frame() from <lj_debug.h> */
+int
+luaT_backtrace_foreach(struct lua_State *L, luaT_backtrace_cb cb, void *cb_ctx)
+{
+	int lua_frame_no = 0, tb_frame_no = 0;
+	cTValue *frame, *nextframe, *bot = tvref(L->stack)+LJ_FR2;
+	GCfunc *fn;
+	BCPos pc;
+	nextframe = NULL;
+	/* Traverse frames backwards. */
+	for (frame = L->base-1; frame > bot; ) {
+		if (frame_gc(frame) == obj2gco(L))
+			lua_frame_no--;  /* Skip dummy frames. See lj_err_optype_call(). */
+		if (lua_frame_no == tb_frame_no) {
+			fn = frame_func(frame);
+			pc = luaT_get_func_pc(L, fn, nextframe);
+			tb_frame_no++;
+			if (cb(tb_frame_no - 1, funcproto(fn), pc, cb_ctx) != 0)
+				return tb_frame_no;
+		}
+		lua_frame_no++;
+		nextframe = frame;
+		if (frame_islua(frame)) {
+			frame = frame_prevl(frame);
+		} else {
+			if (frame_isvarg(frame))
+				lua_frame_no--;  /* Skip vararg pseudo-frame. */
+			frame = frame_prevd(frame);
+		}
+	}
+
+	return tb_frame_no;
 }
 
 /* {{{ Helper functions to interact with a Lua iterator from C */

@@ -53,6 +53,7 @@ extern "C" {
 #include <lj_lib.h>
 #include <lj_tab.h>
 #include <lj_meta.h>
+#include <lj_arch.h>
 
 #include "lua/error.h"
 
@@ -644,6 +645,29 @@ luaT_newthread(struct lua_State *L);
 int
 luaL_checkconstchar(struct lua_State *L, int idx, const char **res,
 		    uint32_t *cdata_type_p);
+
+void
+luaL_pushproto(struct lua_State *L, GCproto *pt);
+
+GCproto *
+luaL_toproto(struct lua_State *L, int idx);
+
+typedef int (luaT_backtrace_cb)(int level, GCproto *pt, BCPos pc, void *cb_ctx);
+
+/** Inspired by lj_debug_line() from <lj_debug.h> as the source */
+int
+luaT_get_func_line(GCproto *pt, BCPos pc);
+
+/** Inspired by lj_debug_funcname() from <lj_debug.h> as the source */
+const char *
+luaT_get_func_name(GCproto *pt, BCPos pc, const char **name);
+
+/** Inspired by debug_framepc() from <lj_debug.h> as the source */
+BCPos
+luaT_get_func_pc(lua_State *L, GCfunc *fn, cTValue *nextframe);
+
+int
+luaT_backtrace_foreach(struct lua_State *L, luaT_backtrace_cb cb, void *cb_ctx);
 
 /* {{{ Helper functions to interact with a Lua iterator from C */
 

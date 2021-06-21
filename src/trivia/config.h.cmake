@@ -61,6 +61,8 @@
  * showing fiber call stack.
  */
 #cmakedefine ENABLE_BACKTRACE 1
+#define ENABLE_C_FULL_TRACE 0
+#define ENABLE_LUA_FULL_TRACE 0
 /*
  * Set if the system has bfd.h header and GNU bfd library.
  */

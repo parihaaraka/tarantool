@@ -1,0 +1,6 @@
+N = 1 000 000
+
+WITH BT     REC CALL: 	1.60	RATE: fib/sec	624142
+NO BT       REC CALL: 	1.23	RATE: fib/sec	810962
+WITH BT     TAIL CALL: 	1.58	RATE: fib/sec	631732
+NO BT       TAIL CALL: 	1.21	RATE: fib/sec	824559
