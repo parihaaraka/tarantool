@@ -428,7 +428,9 @@ relay_initial_join(int fd, uint64_t sync, struct vclock *vclock,
 		diag_raise();
 
 	struct synchro_request req;
+	struct raft_request raft_req;
 	txn_limbo_checkpoint(&txn_limbo, &req);
+	box_raft_checkpoint_local(&raft_req);
 
 	/* Respond to the JOIN request with the current vclock. */
 	struct xrow_header row;
@@ -448,6 +450,10 @@ relay_initial_join(int fd, uint64_t sync, struct vclock *vclock,
 		char body[XROW_SYNCHRO_BODY_LEN_MAX];
 		xrow_encode_synchro(&row, body, &req);
 		row.replica_id = req.replica_id;
+		row.sync = sync;
+		coio_write_xrow(&relay->io, &row);
+
+		xrow_encode_raft(&row, &fiber()->gc, &raft_req);
 		row.sync = sync;
 		coio_write_xrow(&relay->io, &row);
 
