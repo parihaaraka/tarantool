@@ -559,7 +559,8 @@ test_run:cmd("setopt delimiter ';'")
 ---
 - true
 ...
-for i = 1,66 do
+table.insert(format65, {name='X1', type='integer'})
+for i = 2,66 do
         table.insert(format65, {name='X'..i, type='integer', is_nullable = true})
 end
 test_run:cmd("setopt delimiter ''");

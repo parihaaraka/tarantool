@@ -263,6 +263,28 @@ func_index_check_func(struct func *func) {
 }
 
 /**
+ * Verify that index parts are not nullable
+ * in the space.
+ */
+static int
+index_check_not_nullable(struct index *pk, struct space_def *def)
+{
+	struct key_def *kd = pk->def->key_def;
+	struct key_part *part = kd->parts;
+	struct key_part *parts_end = kd->parts + kd->part_count;
+
+	for (; part != parts_end; ++part) {
+		uint32_t field_no = part->fieldno;
+		if (field_no < def->field_count &&
+		    def->fields[field_no].is_nullable) {
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+/**
  * Create a index_def object from a record in _index
  * system space.
  *
@@ -2444,6 +2466,14 @@ on_replace_dd_space(struct trigger * /* trigger */, void *event)
 				  space_name(old_space),
 				  "can not rename space which is referenced by "
 				  "view");
+			return -1;
+		}
+		if (old_space->index_count != 0 &&
+		    index_check_not_nullable(old_space->index[0], def) != 0) {
+			diag_set(ClientError, ER_ALTER_SPACE,
+				 old_space->def->name,
+				 "can not alter nullability "
+				 "of the primary key part");
 			return -1;
 		}
 		/*

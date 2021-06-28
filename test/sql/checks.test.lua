@@ -187,7 +187,8 @@ s = box.schema.create_space('test')
 _ = s:create_index('pk', {parts = {1, 'integer'}})
 format65 = {}
 test_run:cmd("setopt delimiter ';'")
-for i = 1,66 do
+table.insert(format65, {name='X1', type='integer'})
+for i = 2,66 do
         table.insert(format65, {name='X'..i, type='integer', is_nullable = true})
 end
 test_run:cmd("setopt delimiter ''");

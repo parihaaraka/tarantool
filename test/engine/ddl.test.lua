@@ -623,8 +623,8 @@ i.parts
 -- Check that is_nullable can't be set to false on non-empty space
 s:insert({1, NULL})
 format[1].is_nullable = true
--- The format is allowed since in primary index parts
--- is_nullable is still set to false.
+-- The format is not allowed because some primary index parts
+-- have is_nullable set to true.
 s:format(format)
 format[1].is_nullable = false
 format[2].is_nullable = false

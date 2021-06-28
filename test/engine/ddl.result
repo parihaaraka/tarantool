@@ -1683,10 +1683,12 @@ s:insert({1, NULL})
 format[1].is_nullable = true
 ---
 ...
--- The format is allowed since in primary index parts
--- is_nullable is still set to false.
+-- The format is not allowed because some primary index parts
+-- have is_nullable set to true.
 s:format(format)
 ---
+- error: 'Can''t modify space ''test'': can not alter nullability of the primary key
+    part'
 ...
 format[1].is_nullable = false
 ---
