@@ -13,6 +13,12 @@ function prepare_connection_and_send_requests(server_addr, count)
     for i = 1, count do futures[i] = space:replace({i}, {is_async = true}) end
     return conn, space, futures
 end;
+function prepare_connection_and_send_long_requests(server_addr, count, func_name)
+    local conn = net_box.connect(server_addr)
+    local futures = {}
+    for i = 1, count do futures[i] = conn:call(func_name, {}, {is_async = true}) end
+    return conn, futures
+end;
 -- We check for the presence or absence of errors
 -- Calling shutdown does not prevent receiving remaining
 -- results, unlike calling close.
@@ -92,8 +98,19 @@ check_results_with_condition(conn, futures, 10, "shutdown", false)
 
 test_run:cmd("switch test")
 s:drop()
+fiber = require('fiber')
+long_call_count = 0
+function long_call() fiber.sleep(1) long_call_count = long_call_count + 1 return long_call_count end
 test_run:cmd('switch default')
 
+-- Check that in case of shutdown, server processing all incoming
+-- requests, before shutdown.
+replace_count = 10
+conn, futures = prepare_connection_and_send_long_requests(server_addr, replace_count, "long_call")
+-- Give time to send requests to the server
+fiber.yield()
 test_run:cmd("stop server test")
+check_results_with_condition(nil, futures, 0, "shutdown", false)
+
 test_run:cmd("cleanup server test")
 test_run:cmd("delete server test")
