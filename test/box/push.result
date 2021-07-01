@@ -553,6 +553,8 @@ chan_push:put(true)
 ---
 - true
 ...
+-- no error now, because on `on_disconnect` triggers
+-- runs now before session is closed.
 chan_push:get()
 ---
 - Session is closed

@@ -545,6 +545,18 @@ struct iproto_connection
 	char salt[IPROTO_SALT_SIZE];
 	/** Iproto connection thread */
 	struct iproto_thread *iproto_thread;
+	/**
+	 * Request count, currently in work,
+	 * for this connection.
+	 */
+	int64_t n_requests;
+	/**
+	 * Flag indicates, that read from input
+	 * socket returned zero.
+	 */
+	bool was_eof_received;
+	/** Flag indicates, that disconnect finished. */
+	bool is_disconnect_finished;
 };
 
 /**
@@ -561,8 +573,11 @@ iproto_check_msg_max(struct iproto_thread *iproto_thread)
 static inline void
 iproto_msg_delete(struct iproto_msg *msg)
 {
+	struct iproto_connection *con = msg->connection;
 	struct iproto_thread *iproto_thread = msg->connection->iproto_thread;
 	mempool_free(&msg->connection->iproto_thread->iproto_msg_pool, msg);
+	con->n_requests--;
+	assert(con->n_requests >= 0);
 	iproto_resume(iproto_thread);
 }
 
@@ -582,6 +597,7 @@ iproto_msg_new(struct iproto_connection *con)
 			 "connection %s", sio_socketname(con->input.fd));
 		return NULL;
 	}
+	con->n_requests++;
 	msg->close_connection = false;
 	msg->connection = con;
 	rmean_collect(con->iproto_thread->rmean, IPROTO_REQUESTS, 1);
@@ -696,9 +712,14 @@ iproto_connection_close(struct iproto_connection *con)
 		 * is done only once.
 		 */
 		con->p_ibuf->wpos -= con->parse_size;
-		cpipe_push(&con->iproto_thread->tx_pipe, &con->disconnect_msg);
+		if (!con->was_eof_received) {
+			cpipe_push(&con->iproto_thread->tx_pipe,
+				   &con->disconnect_msg);
+		}
 		assert(con->state == IPROTO_CONNECTION_ALIVE);
 		con->state = IPROTO_CONNECTION_CLOSED;
+		if (con->is_disconnect_finished)
+			iproto_connection_try_to_start_destroy(con);
 	} else if (con->state == IPROTO_CONNECTION_PENDING_DESTROY) {
 		iproto_connection_try_to_start_destroy(con);
 	} else {
@@ -829,6 +850,8 @@ iproto_enqueue_batch(struct iproto_connection *con, struct ibuf *in)
 	int n_requests = 0;
 	bool stop_input = false;
 	const char *errmsg;
+	bool msg_is_not_complete = false;
+
 	while (con->parse_size != 0 && !stop_input) {
 		if (iproto_check_msg_max(con->iproto_thread)) {
 			iproto_connection_stop_msg_max_limit(con);
@@ -846,8 +869,10 @@ err_msgpack:
 				 errmsg);
 			return -1;
 		}
-		if (mp_check_uint(pos, in->wpos) >= 0)
+		if (mp_check_uint(pos, in->wpos) >= 0) {
+			msg_is_not_complete = true;
 			break;
+		}
 		uint64_t len = mp_decode_uint(&pos);
 		if (len > IPROTO_PACKET_SIZE_MAX) {
 			errmsg = tt_sprintf("too big packet size in the "\
@@ -856,8 +881,10 @@ err_msgpack:
 			goto err_msgpack;
 		}
 		const char *reqend = pos + len;
-		if (reqend > in->wpos)
+		if (reqend > in->wpos) {
+			msg_is_not_complete = true;
 			break;
+		}
 		struct iproto_msg *msg = iproto_msg_new(con);
 		if (msg == NULL) {
 			/*
@@ -884,6 +911,14 @@ err_msgpack:
 		assert(con->parse_size >= (size_t) (reqend - reqstart));
 		con->parse_size -= reqend - reqstart;
 	}
+	if (con->was_eof_received && msg_is_not_complete) {
+		/**
+		 * We will reset the data related to an incomplete message,
+		 * after EOF we will never finish reading it.
+		 */
+		con->p_ibuf->wpos -= con->parse_size;
+		con->parse_size = 0;
+	}
 	if (stop_input) {
 		/**
 		 * Don't mess with the file descriptor
@@ -895,7 +930,8 @@ err_msgpack:
 		 */
 		ev_io_stop(con->loop, &con->output);
 		ev_io_stop(con->loop, &con->input);
-	} else if (n_requests != 1 || con->parse_size != 0) {
+	} else if ((n_requests != 1 && !con->was_eof_received) ||
+		   con->parse_size != 0) {
 		/*
 		 * Keep reading input, as long as the socket
 		 * supplies data, but don't waste CPU on an extra
@@ -1003,8 +1039,17 @@ iproto_connection_on_input(ev_loop *loop, struct ev_io *watcher,
 			return;
 		}
 		if (nrd == 0) {                 /* EOF */
-			iproto_connection_close(con);
-			return;
+			assert(con->state == IPROTO_CONNECTION_ALIVE);
+			if (!con->was_eof_received) {
+				cpipe_push(&con->iproto_thread->tx_pipe,
+					   &con->disconnect_msg);
+			}
+			con->was_eof_received = true;
+			ev_io_stop(con->loop, &con->input);
+			if (con->n_requests == 0 && con->parse_size == 0) {
+				iproto_connection_close(con);
+				return;
+			}
 		}
 		/* Count statistics */
 		rmean_collect(con->iproto_thread->rmean,
@@ -1099,12 +1144,16 @@ iproto_connection_on_output(ev_loop *loop, struct ev_io *watcher,
 				return;
 			}
 			if (! ev_is_active(&con->input) &&
-			    rlist_empty(&con->in_stop_list)) {
+			    rlist_empty(&con->in_stop_list) &&
+			    ! con->was_eof_received) {
 				ev_feed_event(loop, &con->input, EV_READ);
 			}
 		}
 		if (ev_is_active(&con->output))
 			ev_io_stop(con->loop, &con->output);
+		if (con->was_eof_received && con->n_requests == 0 &&
+		    con->parse_size == 0)
+			iproto_connection_close(con);
 	} catch (Exception *e) {
 		e->log();
 		iproto_connection_close(con);
@@ -1138,6 +1187,9 @@ iproto_connection_new(struct iproto_thread *iproto_thread, int fd)
 	con->parse_size = 0;
 	con->long_poll_count = 0;
 	con->session = NULL;
+	con->n_requests = 0;
+	con->was_eof_received = false;
+	con->is_disconnect_finished = false;
 	rlist_create(&con->in_stop_list);
 	/* It may be very awkward to allocate at close. */
 	cmsg_init(&con->destroy_msg, con->iproto_thread->destroy_route);
@@ -1335,7 +1387,10 @@ net_finish_disconnect(struct cmsg *m)
 {
 	struct iproto_connection *con =
 		container_of(m, struct iproto_connection, disconnect_msg);
-	iproto_connection_try_to_start_destroy(con);
+	if (con->state == IPROTO_CONNECTION_CLOSED)
+		iproto_connection_try_to_start_destroy(con);
+	else
+		con->is_disconnect_finished = true;
 }
 
 /**
@@ -1395,7 +1450,7 @@ net_discard_input(struct cmsg *m)
 	msg->len = 0;
 	con->long_poll_count++;
 	if (evio_has_fd(&con->input) && !ev_is_active(&con->input) &&
-	    rlist_empty(&con->in_stop_list))
+	    rlist_empty(&con->in_stop_list) && !con->was_eof_received)
 		ev_feed_event(con->loop, &con->input, EV_READ);
 }
 
@@ -1884,6 +1939,15 @@ net_end_join(struct cmsg *m)
 	iproto_msg_delete(msg);
 
 	assert(! ev_is_active(&con->input));
+	/*
+	 * In case we received eof for this connection, and
+	 * all requests were processed, close it
+	 */
+	if (con->was_eof_received && con->parse_size == 0 &&
+	    con->n_requests == 0) {
+		iproto_connection_close(con);
+		return;
+	}
 	/*
 	 * Enqueue any messages if they are in the readahead
 	 * queue. Will simply start input otherwise.
