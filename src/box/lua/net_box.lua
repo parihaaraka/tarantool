@@ -269,6 +269,8 @@ local function create_transport(host, port, user, password, callback,
     local last_errno
     local last_error
     local state_cond       = fiber.cond() -- signaled when the state changes
+    local is_shutdown_received = false
+    local is_shutdown_called   = false
 
     -- Async requests currently 'in flight', keyed by a request
     -- id. Value refs are weak hence if a client dies
@@ -526,6 +528,20 @@ local function create_transport(host, port, user, password, callback,
         end
     end
 
+    local function shutdown()
+        -- We don't use connection:shutdown() which is implemented,
+        -- in 'socket' library because of strange behaviour of this
+        -- function: it's closes socket both for read and write
+        -- regardless of what value is passed to this function.
+        if connection and not is_shutdown_received and not is_shutdown_called then
+            is_shutdown_received = true
+            if send_buf:size() == 0 then
+                is_shutdown_called = true
+                internal.shutdown(connection:fd())
+            end
+        end
+    end
+
     --
     -- Send a request and do not wait for response.
     -- @retval nil, error Error occured.
@@ -679,8 +695,13 @@ local function create_transport(host, port, user, password, callback,
 
     -- IO (WORKER FIBER) --
     local function send_and_recv(limit_or_boundary, timeout)
-        return communicate(connection:fd(), send_buf, recv_buf,
-                           limit_or_boundary, timeout)
+        local err, extra  = communicate(connection:fd(), send_buf, recv_buf,
+                                        limit_or_boundary, timeout)
+        if send_buf:size() == 0 and is_shutdown_received and not is_shutdown_called then
+            is_shutdown_called = true
+            internal.shutdown(connection:fd())
+        end
+        return err, extra
     end
 
     local function send_and_recv_iproto(timeout)
@@ -898,6 +919,7 @@ local function create_transport(host, port, user, password, callback,
 
     return {
         stop            = stop,
+        shutdown        = shutdown,
         start           = start,
         wait_state      = wait_state,
         perform_request = perform_request,
@@ -1127,6 +1149,11 @@ end
 function remote_methods:close()
     check_remote_arg(self, 'close')
     self._transport.stop()
+end
+
+function remote_methods:shutdown()
+    check_remote_arg(self, 'shutdown')
+    self._transport.shutdown()
 end
 
 function remote_methods:on_schema_reload(...)
