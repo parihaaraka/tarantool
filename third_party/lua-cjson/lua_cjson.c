@@ -52,6 +52,8 @@
 #include "mp_extension_types.h" /* MP_DECIMAL, MP_UUID */
 #include "diag.h"
 #include "tt_static.h"
+#include "core/tt_uuid.h" /* tt_uuid_to_string(), UUID_STR_LEN */
+#include "core/datetime.h"
 #include "cord_buf.h"
 #include "tt_uuid.h" /* tt_uuid_to_string(), UUID_STR_LEN */
 
@@ -431,6 +433,12 @@ static void json_append_data(lua_State *l, struct luaL_serializer *cfg,
         {
             const char *str = field.errorval->errmsg;
             return json_append_string(cfg, json, str, strlen(str));
+        }
+        case MP_DATETIME:
+        {
+            char buf[DT_TO_STRING_BUFSIZE];
+	    size_t sz = tnt_datetime_to_string(field.dateval, buf, sizeof(buf));
+	    return json_append_string(cfg, json, buf, sz);
         }
         default:
             assert(false);
