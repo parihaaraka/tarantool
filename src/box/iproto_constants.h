@@ -261,6 +261,11 @@ enum iproto_type {
 	IPROTO_FETCH_SNAPSHOT = 69,
 	/** REGISTER request to leave anonymous replication. */
 	IPROTO_REGISTER = 70,
+	/**
+	 * Shutdown response to client. It is sent when server shutdown,
+	 * to clients that support graceful shutdown.
+	 */
+	IPROTO_SHUTDOWN = 71,
 
 	/** Vinyl run info stored in .index file */
 	VY_INDEX_RUN_INFO = 100,

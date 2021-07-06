@@ -21,8 +21,11 @@ test_run:cmd("setopt delimiter ';'")
  | ---
  | - true
  | ...
-function prepare_connection_and_send_requests(server_addr, count)
+function prepare_connection_and_send_requests(server_addr, count, is_graceful_shutdown_required)
     local conn = net_box.connect(server_addr)
+    if is_graceful_shutdown_required then
+        conn.space._session_settings:update('graceful_shutdown_required', {{'=', 'value', true}})
+    end
     local space = conn.space.test
     local futures = {}
     for i = 1, count do futures[i] = space:replace({i}, {is_async = true}) end
@@ -56,6 +59,7 @@ function check_results_with_condition(connection, futures, number, shutdown_or_c
         end
         results[i], err = future:wait_result()
         if err then
+            print(i , err)
             break
         end
     end
@@ -225,6 +229,97 @@ test_run:cmd("stop server test")
  | ...
 check_results_with_condition(nil, futures, 0, "shutdown", false)
  | ---
+ | ...
+
+-- Now check graceful shutdown for connections with special
+-- graceful shutdown support.
+
+-- First, check the case without the "reconnect after" option.
+-- In the case when we received IPPROTO_SHUT, we wait until
+-- send_buf is empty, and then we send SHUT_WR to the server.
+-- Server processes all remaining requests and closes connection.
+-- We receive responses to all requests that were sent before we
+-- received IPROTO_SHUTDOWN.
+test_run:cmd("start server test with args='10'")
+ | ---
+ | - true
+ | ...
+server_addr = test_run:cmd("eval test 'return box.cfg.listen'")[1]
+ | ---
+ | ...
+test_run:cmd("switch test")
+ | ---
+ | - true
+ | ...
+s = box.schema.space.create('test', { engine = 'memtx' })
+ | ---
+ | ...
+_ = s:create_index('primary')
+ | ---
+ | ...
+test_run:cmd('switch default')
+ | ---
+ | - true
+ | ...
+replace_count = 20000
+ | ---
+ | ...
+conn, space, futures = prepare_connection_and_send_requests(server_addr, replace_count, true)
+ | ---
+ | ...
+-- For connections with graceful shutdown support we don't need yield
+-- to ensure that requests are sent to server.
+-- Server does not shutdown until it receives a SHUT_WR from the client,
+-- and the client does not send it until send_buf is empty.
+test_run:cmd("stop server test")
+ | ---
+ | - true
+ | ...
+check_results_with_condition(nil, futures, 0, "shutdown", false)
+ | ---
+ | ...
+test_run:cmd("start server test with args='10'")
+ | ---
+ | - true
+ | ...
+test_run:cmd("switch test")
+ | ---
+ | - true
+ | ...
+-- Setting a small timeout for shutdown to ensure that
+-- requests do not have time to be processed.
+box.ctl.set_on_shutdown_timeout(0.5)
+ | ---
+ | ...
+test_run:cmd("switch default")
+ | ---
+ | - true
+ | ...
+server_addr = test_run:cmd("eval test 'return box.cfg.listen'")[1]
+ | ---
+ | ...
+replace_count = 100000
+ | ---
+ | ...
+conn, space, futures = prepare_connection_and_send_requests(server_addr, replace_count, true)
+ | ---
+ | ...
+test_run:cmd("stop server test")
+ | ---
+ | - true
+ | ...
+check_results_with_condition(nil, futures, 0, "shutdown", true)
+ | ---
+ | ...
+opts = {}
+ | ---
+ | ...
+opts.filename = 'gh-5924-implement-graceful-shutdown.log'
+ | ---
+ | ...
+assert(test_run:grep_log("test", "on_shutdown triggers are timed out", nil, opts))
+ | ---
+ | - on_shutdown triggers are timed out
  | ...
 
 test_run:cmd("cleanup server test")

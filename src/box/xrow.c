@@ -571,6 +571,15 @@ cleanup:
 	region_truncate(region, region_svp);
 }
 
+ssize_t
+iproto_write_shutdown(int fd, uint32_t schema_version)
+{
+	char header[IPROTO_HEADER_LEN + 1];
+	iproto_header_encode(header, IPROTO_SHUTDOWN, 0, schema_version, 1);
+	header[IPROTO_HEADER_LEN] = 0x80; /* empty MessagePack Map */
+	return write(fd, header, sizeof(header));
+}
+
 int
 iproto_prepare_header(struct obuf *buf, struct obuf_svp *svp, size_t size)
 {

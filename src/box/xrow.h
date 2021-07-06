@@ -716,6 +716,11 @@ void
 iproto_write_error(int fd, const struct error *e, uint32_t schema_version,
 		   uint64_t sync);
 
+/**
+ * Write IPROTO_SHUTDOWN directly to a socket. */
+ssize_t
+iproto_write_shutdown(int fd, uint32_t schema_version);
+
 enum {
 	/* Maximal length of protocol name in handshake */
 	GREETING_PROTOCOL_LEN_MAX = 32,

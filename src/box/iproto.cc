@@ -119,6 +119,7 @@ struct iproto_thread {
 	 * Static routes for this iproto thread
 	 */
 	struct cmsg_hop destroy_route[2];
+	struct cmsg_hop shutdown_route[2];
 	struct cmsg_hop disconnect_route[2];
 	struct cmsg_hop misc_route[2];
 	struct cmsg_hop call_route[2];
@@ -370,6 +371,15 @@ tx_end_push(struct cmsg *m);
 
 /* }}} */
 
+/** Session settings used in iproto thread. */
+struct iproto_session_settings {
+	/**
+	 * Flag indicates, that this connection
+	 * supports graceful shutdown.
+	 */
+	bool graceful_shutdown_required;
+};
+
 /* {{{ iproto_connection - declaration and definition */
 
 /** Connection life cycle stages. */
@@ -488,6 +498,13 @@ struct iproto_connection
 	struct session *session;
 	ev_loop *loop;
 	/**
+	 * Pre-allocated shutdown msg. Is sent after shutdown
+	 * has happend. Transmits the current session settings
+	 * from tx to iproto thread and starts connection shutdown.
+	 */
+	struct cmsg shutdown_msg;
+
+	/**
 	 * Pre-allocated disconnect msg. Is sent right after
 	 * actual disconnect has happened. Does not destroy the
 	 * connection. Used to notify existing requests about the
@@ -572,6 +589,11 @@ struct iproto_connection
 	bool was_eof_received;
 	/** Flag indicates, that disconnect finished. */
 	bool is_disconnect_finished;
+	/**
+	 * Session settings used in iproto thread.
+	 * Currently used only for graceful shutdown.
+	 */
+	struct iproto_session_settings session_settings;
 };
 
 /**
@@ -1213,11 +1235,13 @@ iproto_connection_new(struct iproto_thread *iproto_thread, int fd)
 	con->n_requests = 0;
 	con->was_eof_received = false;
 	con->is_disconnect_finished = false;
+	con->session_settings.graceful_shutdown_required = false;
 	rlist_create(&con->in_stop_list);
 	rlist_create(&con->in_active_list);
 	/* It may be very awkward to allocate at close. */
 	cmsg_init(&con->destroy_msg, con->iproto_thread->destroy_route);
 	cmsg_init(&con->disconnect_msg, con->iproto_thread->disconnect_route);
+	cmsg_init(&con->shutdown_msg, con->iproto_thread->shutdown_route);
 	con->state = IPROTO_CONNECTION_ALIVE;
 	con->tx.is_push_pending = false;
 	con->tx.is_push_sent = false;
@@ -1576,6 +1600,31 @@ tx_inject_delay(void)
 			fiber_sleep(0.001);
 	});
 }
+
+static void
+tx_process_shutdown(struct cmsg *m)
+{
+	struct iproto_connection *con =
+		container_of(m, struct iproto_connection, shutdown_msg);
+	if (con->session != NULL) {
+		con->session_settings.graceful_shutdown_required =
+			con->session->graceful_shutdown_required;
+	}
+}
+
+static void
+net_process_shutdown(struct cmsg *m)
+{
+	struct iproto_connection *con =
+		container_of(m, struct iproto_connection, shutdown_msg);
+	if (!con->session_settings.graceful_shutdown_required) {
+		shutdown(con->input.fd, SHUT_RD);
+	} else {
+		if (iproto_write_shutdown(con->input.fd, ::schema_version) < 0)
+			shutdown(con->input.fd, SHUT_RD);
+	}
+}
+
 
 static void
 tx_process1(struct cmsg *m)
@@ -2255,6 +2304,10 @@ iproto_thread_init_routes(struct iproto_thread *iproto_thread)
 		{ tx_process_destroy, &iproto_thread->net_pipe };
 	iproto_thread->destroy_route[1] =
 		{ net_finish_destroy, NULL };
+	iproto_thread->shutdown_route[0] =
+		{ tx_process_shutdown, &iproto_thread->net_pipe };
+	iproto_thread->shutdown_route[1] =
+		{ net_process_shutdown, NULL };
 	iproto_thread->disconnect_route[0] =
 		{ tx_process_disconnect, &iproto_thread->net_pipe };
 	iproto_thread->disconnect_route[1] =
@@ -2352,11 +2405,11 @@ iproto_do_shutdown_f(struct cbus_call_msg *m)
 
 	connections = &iproto_thread->active_connections;
 	rlist_foreach_entry(con, connections, in_active_list)
-		shutdown(con->input.fd, SHUT_RD);
+		cpipe_push(&con->iproto_thread->tx_pipe, &con->shutdown_msg);
 
 	connections = &iproto_thread->stopped_connections;
 	rlist_foreach_entry(con, connections, in_stop_list)
-		shutdown(con->input.fd, SHUT_RD);
+		cpipe_push(&con->iproto_thread->tx_pipe, &con->shutdown_msg);
 	return 0;
 }
 

@@ -43,6 +43,7 @@ local IPROTO_ERROR         = 0x52
 local IPROTO_GREETING_SIZE = 128
 local IPROTO_CHUNK_KEY     = 128
 local IPROTO_OK_KEY        = 0
+local IPROTO_SHUTDOWN_KEY  = 71
 
 -- select errors from box.error
 local E_UNKNOWN              = box.error.UNKNOWN
@@ -597,12 +598,15 @@ local function create_transport(host, port, user, password, callback,
     end
 
     local function dispatch_response_iproto(hdr, body_rpos, body_end)
+        local status = hdr[IPROTO_STATUS_KEY]
+        if status == IPROTO_SHUTDOWN_KEY then
+            shutdown()
+        end
         local id = hdr[IPROTO_SYNC_KEY]
         local request = requests[id]
         if request == nil then -- nobody is waiting for the response
             return
         end
-        local status = hdr[IPROTO_STATUS_KEY]
         local body
         local body_len = body_end - body_rpos
 
