@@ -344,13 +344,17 @@ box_raft_wait_leader_found(void)
 	struct trigger trig;
 	trigger_create(&trig, box_raft_wait_leader_found_f, fiber(), NULL);
 	raft_on_update(box_raft(), &trig);
-	fiber_yield();
+
+	do {
+		fiber_yield();
+	} while (box_raft()->is_enabled && !fiber_is_cancelled() &&
+		 box_raft()->leader == REPLICA_ID_NIL);
+
 	trigger_clear(&trig);
 	if (fiber_is_cancelled()) {
 		diag_set(FiberIsCancelled);
 		return -1;
 	}
-	assert(box_raft()->leader != REPLICA_ID_NIL || !box_raft()->is_enabled);
 	return 0;
 }
 
