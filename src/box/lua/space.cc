@@ -28,6 +28,7 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#include "box/memtx_tx.h"
 #include "box/ck_constraint.h"
 #include "box/lua/space.h"
 #include "box/lua/tuple.h"
@@ -606,6 +607,42 @@ usage_error:
 	return luaL_error(L, "Usage: space:frommap(map, opts)");
 }
 
+static int
+lbox_space_dump_history(struct lua_State *L)
+{
+	int argc = lua_gettop(L);
+	uint32_t id = 0;
+	const char *filename;
+	FILE *fout;
+	struct space *space;
+	if (!memtx_tx_manager_use_mvcc_engine)
+		return luaL_error(L, "Error: MVCC is disabled");
+
+	if (argc != 2 || !lua_isstring(L, 2))
+		return luaL_error(L, "Usage: space:dump_history(filename)");
+	filename = lua_tostring(L, 2);
+
+	lua_getfield(L, 1, "id");
+	id = lua_tointeger(L, -1);
+	space = space_by_id(id);
+	if (space == NULL) {
+		lua_pushnil(L);
+		lua_pushfstring(L, "Space with id '%d' doesn't exist", id);
+		return 2;
+	}
+
+	fout = fopen(filename, "w+");
+	if (fout == NULL) {
+		lua_pushnil(L);
+		lua_pushfstring(L, "Can't write to file '%s'", filename);
+		return 2;
+	}
+	memtx_tx_dump_space_history(space, fileno(fout));
+	fclose(fout);
+
+	return 0;
+}
+
 void
 box_lua_space_init(struct lua_State *L)
 {
@@ -705,6 +742,7 @@ box_lua_space_init(struct lua_State *L)
 
 	static const struct luaL_Reg space_internal_lib[] = {
 		{"frommap", lbox_space_frommap},
+		{"dump_history", lbox_space_dump_history},
 		{NULL, NULL}
 	};
 	luaL_register(L, "box.internal.space", space_internal_lib);

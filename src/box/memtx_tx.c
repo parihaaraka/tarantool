@@ -1992,3 +1992,109 @@ memtx_tx_snapshot_cleaner_destroy(struct memtx_tx_snapshot_cleaner *cleaner)
 	if (cleaner->ht != NULL)
 		mh_snapshot_cleaner_delete(cleaner->ht);
 }
+
+static const char *
+memtx_tx_dump_mp_static(const char *mp)
+{
+	static char buf[256];
+	if (mp == NULL || mp_snprint(buf, 256, mp) < 0) {
+		return "[...]";
+	} else {
+		char *it = strchr(buf, '\"');
+		while (it) {
+			*it = '\'';
+			it = strchr(it, '\"');
+		}
+	}
+
+	return buf;
+}
+
+static void
+memtx_tx_dump_nearby_gaps(struct memtx_story *story, uint32_t index, int fd)
+{
+	struct memtx_story_link *link = &story->link[index];
+	struct gap_item *item, *tmp;
+
+	rlist_foreach_entry_safe(item, &link->nearby_gaps, in_nearby_gaps, tmp) {
+		const char *buf = memtx_tx_dump_mp_static(item->key);
+		dprintf(fd, "GAP%s |", buf);
+	}
+}
+
+static void
+memtx_tx_dump_story_node(struct memtx_story *story, int fd)
+{
+	const char *buf = memtx_tx_dump_mp_static(tuple_data(story->tuple));
+	uint32_t n = story->index_count;
+
+	dprintf(fd, "\"%p\" [label=\"", story->tuple);
+	for (uint32_t i = 0; i < n; i++) {
+		memtx_tx_dump_nearby_gaps(story, i, fd);
+		dprintf(fd, "<i%"PRIu32"> $%"PRIu32" |", i, i);
+	}
+	if (story->add_psn != 0)
+		dprintf(fd, "<add_psn> +PSN#%"PRId64" |", story->add_psn);
+	if (story->del_psn != 0)
+		dprintf(fd, "<del_psn> -PSN#%"PRId64" |", story->del_psn);
+
+	if (story->add_stmt != NULL)
+		dprintf(fd, "<add_id> +TX#%"PRId64" |", story->add_stmt->txn->id);
+	if (story->del_stmt != NULL)
+		dprintf(fd, "<del_id> -TX#%"PRId64" |", story->del_stmt->txn->id);
+
+	dprintf(fd, "<t> %s\"", buf);
+
+	if (story->add_stmt != NULL && story->del_stmt != NULL)
+		dprintf(fd, " fontcolor=darkred");
+	else if (story->del_stmt != NULL)
+		dprintf(fd, " fontcolor=darkblue");
+	else if (story->add_stmt != NULL)
+		dprintf(fd, " fontcolor=darkgreen");
+	else
+		dprintf(fd, " fontcolor=black");
+
+	dprintf(fd, "];\n");
+}
+
+static void
+memtx_tx_dump_story_links(struct memtx_story *story, int fd)
+{
+	struct memtx_story_link *link;
+	for (uint32_t i = 0; i < story->index_count; i++) {
+		link = &story->link[i];
+		if (link->older_story) {
+			dprintf(fd, "\"%p\":i%"PRIu32" -> \"%p\":i%"PRIu32" "
+				"[style=\"dashed\" arrowhead=dot arrowtail=none];\n",
+				link->older_story->tuple, i, story->tuple, i);
+		}
+		if (link->newer_story) {
+			dprintf(fd, "\"%p\":i%"PRIu32" -> \"%p\":i%"PRIu32" "
+				"[style=\"bold\"];\n",
+				link->newer_story->tuple, i, story->tuple, i);
+
+			if (link->newer_story->add_psn == story->del_psn
+			    && story->del_psn != 0) {
+				dprintf(fd, "\"%p\":del_psn -> \"%p\":add_psn "
+					    "[style=\"dashed\"];\n",
+					story->tuple, link->newer_story->tuple);
+			}
+		}
+	}
+}
+
+void
+memtx_tx_dump_space_history(struct space *space, int fd)
+{
+	struct memtx_story *story, *tmp;
+	dprintf(fd, "digraph {\nnode [shape=\"record\"];\n");
+	rlist_foreach_entry_safe(story, &space->memtx_stories,
+				 in_space_stories, tmp) {
+		memtx_tx_dump_story_node(story, fd);
+	}
+	rlist_foreach_entry_safe(story, &space->memtx_stories,
+				 in_space_stories, tmp) {
+		memtx_tx_dump_story_links(story, fd);
+	}
+	dprintf(fd, "}\n");
+}

@@ -2162,6 +2162,7 @@ space_mt.run_triggers = function(space, yesno)
     builtin.space_run_triggers(s, yesno)
 end
 space_mt.frommap = box.internal.space.frommap
+space_mt.dump_history = box.internal.space.dump_history
 space_mt.__index = space_mt
 
 local ck_constraint_mt = {}

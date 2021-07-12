@@ -429,6 +429,13 @@ memtx_tx_snapshot_clarify(struct memtx_tx_snapshot_cleaner *cleaner,
 void
 memtx_tx_snapshot_cleaner_destroy(struct memtx_tx_snapshot_cleaner *cleaner);
 
+/**
+ * Write all stories related to @a space in .dot format into @fd.
+ * TODO: int fd -> FILE *fout (?)
+ */
+void
+memtx_tx_dump_space_history(struct space *space, int fd);
+
 #if defined(__cplusplus)
 } /* extern "C" */
 #endif /* defined(__cplusplus) */
