@@ -1679,6 +1679,34 @@ box_issue_promote(uint32_t prev_leader_id, int64_t promote_lsn)
 	assert(txn_limbo_is_empty(&txn_limbo));
 }
 
+/**
+ * Check whether this instance may run a promote() and set promote parameters
+ * according to its election mode.
+ */
+static int
+box_check_promote_election_mode(bool *try_wait, bool *run_elections)
+{
+	switch (box_election_mode) {
+	case ELECTION_MODE_OFF:
+		if (try_wait != NULL)
+			*try_wait = true;
+		break;
+	case ELECTION_MODE_VOTER:
+		assert(box_raft()->state == RAFT_STATE_FOLLOWER);
+		diag_set(ClientError, ER_UNSUPPORTED, "election_mode='voter'",
+			 "manual elections");
+		return -1;
+	case ELECTION_MODE_MANUAL:
+	case ELECTION_MODE_CANDIDATE:
+		if (run_elections != NULL)
+			*run_elections = box_raft()->state != RAFT_STATE_LEADER;
+		break;
+	default:
+		unreachable();
+	}
+	return 0;
+}
+
 int
 box_promote(void)
 {
@@ -1707,22 +1735,8 @@ box_promote(void)
 	bool run_elections = false;
 	bool try_wait = false;
 
-	switch (box_election_mode) {
-	case ELECTION_MODE_OFF:
-		try_wait = true;
-		break;
-	case ELECTION_MODE_VOTER:
-		assert(box_raft()->state == RAFT_STATE_FOLLOWER);
-		diag_set(ClientError, ER_UNSUPPORTED, "election_mode='voter'",
-			 "manual elections");
+	if (box_check_promote_election_mode(&try_wait, &run_elections) < 0)
 		return -1;
-	case ELECTION_MODE_MANUAL:
-	case ELECTION_MODE_CANDIDATE:
-		run_elections = box_raft()->state != RAFT_STATE_LEADER;
-		break;
-	default:
-		unreachable();
-	}
 
 	int64_t wait_lsn = -1;
 
