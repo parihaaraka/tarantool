@@ -257,7 +257,7 @@ mp_datetime_test()
 	};
 	size_t index;
 
-	plan(68);
+	plan(85);
 	for (index = 0; index < lengthof(tests); index++) {
 		struct datetime date = {
 			tests[index].secs,
@@ -280,6 +280,7 @@ mp_datetime_test()
 		struct datetime *rc = tnt_mp_decode_datetime(&data1, &ret);
 		is(rc, &ret, "tnt_mp_decode_datetime() return code");
 		is(data1, end, "data1 == end (%lu)", data1 - end);
+		is(datetime_compare(&date, &ret), 0, "datetime_compare(&date, &ret)");
 	}
 	check_plan();
 }
