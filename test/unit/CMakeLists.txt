@@ -13,6 +13,7 @@ include_directories(${PROJECT_SOURCE_DIR}/src)
 include_directories(${PROJECT_BINARY_DIR}/src)
 include_directories(${PROJECT_SOURCE_DIR}/src/box)
 include_directories(${CMAKE_SOURCE_DIR}/third_party)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/coro)
 include_directories(${ICU_INCLUDE_DIRS})
 include_directories(${CURL_INCLUDE_DIRS})
 
@@ -278,3 +279,9 @@ target_link_libraries(popen.test misc unit core)
 
 add_executable(serializer.test serializer.c)
 target_link_libraries(serializer.test unit box ${LUAJIT_LIBRARIES})
+
+add_executable(backtrace_unw_coro.test backtrace_unw_coro.c core_test_utils.c)
+target_link_libraries(backtrace_unw_coro.test core unit)
+
+add_executable(backtrace_rip_coro.test backtrace_rip_coro.c core_test_utils.c)
+target_link_libraries(backtrace_rip_coro.test core unit)
