@@ -56,6 +56,16 @@ int     tnt_dt_month        (dt_t dt);
 int     tnt_dt_doy          (dt_t dt);
 int     tnt_dt_dom          (dt_t dt);
 
+/* dt_arithmetic.h definitions */
+typedef enum {
+    DT_EXCESS,
+    DT_LIMIT,
+    DT_SNAP
+} dt_adjust_t;
+
+dt_t   tnt_dt_add_years    (dt_t dt, int delta, dt_adjust_t adjust);
+dt_t   tnt_dt_add_months   (dt_t dt, int delta, dt_adjust_t adjust);
+
 /* dt_parse_iso.h definitions */
 size_t tnt_dt_parse_iso_zone_lenient(const char *str, size_t len, int *offset);
 
@@ -71,11 +81,14 @@ void   tnt_datetime_now(struct datetime *now);
 local builtin = ffi.C
 local math_modf = math.modf
 local math_floor = math.floor
+local math_fmod = math.fmod
+local math_abs = math.abs
 
 -- Unix, January 1, 1970, Thursday
 local DAYS_EPOCH_OFFSET = 719163
 local SECS_PER_DAY      = 86400
 local SECS_EPOCH_OFFSET = DAYS_EPOCH_OFFSET * SECS_PER_DAY
+local NANOS_PER_SEC     = 1e9
 local TOSTRING_BUFSIZE  = 48
 local STRFTIME_BUFSIZE  = 128
 
@@ -87,6 +100,27 @@ local MIN_DATE_DAY = 22
 local MAX_DATE_YEAR = 5879611
 local MAX_DATE_MONTH = 7
 local MAX_DATE_DAY = 11
+-- In the Julian calendar, the average year length is
+-- 365 1/4 days = 365.25 days. This gives an error of
+-- about 1 day in 128 years.
+local AVERAGE_DAYS_YEAR = 365.25
+local AVERAGE_DAYS_MONTH = (AVERAGE_DAYS_YEAR / 12)
+local AVERAGE_WEEK_YEAR = (AVERAGE_DAYS_YEAR / 7)
+local INT_MAX = 2147483647
+local INT_MIN = -2147483648
+-- -5879610-06-22
+local MIN_DATE_TEXT = ('%d-%02d-%02d'):format(MIN_DATE_YEAR, MIN_DATE_MONTH,
+                                              MIN_DATE_DAY)
+-- 5879611-07-11
+local MAX_DATE_TEXT = ('%d-%02d-%02d'):format(MAX_DATE_YEAR, MAX_DATE_MONTH,
+                                              MAX_DATE_DAY)
+local MAX_YEAR_RANGE = (MAX_DATE_YEAR - MIN_DATE_YEAR)
+local MAX_MONTH_RANGE = (MAX_YEAR_RANGE * 12)
+local MAX_WEEK_RANGE = (MAX_YEAR_RANGE * AVERAGE_WEEK_YEAR)
+local MAX_DAY_RANGE = (MAX_YEAR_RANGE * AVERAGE_DAYS_YEAR)
+local MAX_HOUR_RANGE = (MAX_DAY_RANGE * 24)
+local MAX_MIN_RANGE = (MAX_HOUR_RANGE * 60)
+local MAX_SEC_RANGE = (MAX_DAY_RANGE * SECS_PER_DAY)
 
 local date_tostr_stash =
     buffer.ffi_stash_new(string.format('char[%s]', TOSTRING_BUFSIZE))
@@ -100,8 +134,40 @@ local date_strf_stash_put = date_strf_stash.put
 
 local datetime_t = ffi.typeof('struct datetime')
 
+--[[
+    To be able to perform arithmetics on time intervals and receive
+    deterministic results, we have to keep months and years separately
+    from seconds.
+    Weeks, days, hours and minutes, all could be _precisely_ converted
+    to seconds, but it's not the case for months (which might be 28, 29,
+    30, or 31 days long), or years (which could be leap year or not).
+    Approach used here - to add/subtract months or years intervals only
+    at the moment when we have particular date we operate on.
+    Determinism of results is achieved due to the order we apply
+    operations (from larger to smaller quantities):
+    - years, then months, then weeks, days, hours, minutes,
+      seconds, and nanoseconds.
+]]
+ffi.cdef [[
+    struct datetime_interval {
+        double sec;
+        int nsec;
+        int month;
+        int year;
+    };
+]]
+local interval_t = ffi.typeof('struct datetime_interval')
+
+local function is_interval(o)
+    return ffi.istype(interval_t, o)
+end
+
 local function is_datetime(o)
     return ffi.istype(datetime_t, o)
+end
+
+local function is_table(o)
+    return type(o) == 'table'
 end
 
 local function check_date(o, message)
@@ -111,8 +177,36 @@ local function check_date(o, message)
     end
 end
 
+local function check_date_interval(o, message)
+    if not is_datetime(o) and not is_interval(o) then
+        return error(("%s: expected datetime or interval, but received %s"):
+                     format(message, type(o)), 2)
+    end
+end
+
+local function check_interval(o, message)
+    if not is_interval(o) then
+        return error(("%s: expected interval, but received %s"):
+                     format(message, type(o)), 2)
+    end
+end
+
+local function check_interval_table(o, message)
+    if not is_table(o) and not is_interval(o) then
+        return error(("%s: expected interval or table, but received %s"):
+                     format(message, type(o)), 2)
+    end
+end
+
+local function check_date_interval_table(o, message)
+    if not is_table(o) and not is_datetime(o) and not is_interval(o) then
+        return error(("%s: expected datetime, interval or table, but received %s"):
+                     format(message, type(o)), 2)
+    end
+end
+
 local function check_table(o, message)
-    if type(o) ~= 'table' then
+    if not is_table(o) then
         return error(("%s: expected table, but received %s"):
                      format(message, type(o)), 2)
     end
@@ -145,6 +239,22 @@ local function check_range(v, from, to, txt, extra)
     end
 end
 
+local function check_dt(dt_v, direction, v, unit)
+    if dt_v >= INT_MIN and dt_v <= INT_MAX then
+        return
+    end
+    local operation = direction >= 0 and 'addition' or 'subtraction'
+    local title = unit ~= nil and ('%s of %d %s'):format(operation, v, unit) or
+                                  operation
+    if dt_v < INT_MIN then
+        error(('%s makes date less than minimum allowed %s'):
+                format(title, MIN_DATE_TEXT), 3)
+    elseif dt_v > INT_MAX then
+        error(('%s makes date greater than maximum allowed %s'):
+                format(title, MAX_DATE_TEXT), 3)
+    end
+end
+
 local function check_ymd_range(y, M, d)
     -- Fast path. Max/min year is rather theoretical. Nobody is going to
     -- actually use them.
@@ -172,11 +282,94 @@ local function check_ymd_range(y, M, d)
         return
     end
 ::min_err::
-    error(('date %d-%02d-%02d is less than minimum allowed %d-%02d-%02d'):
-        format(y, M, d, MIN_DATE_YEAR, MIN_DATE_MONTH, MIN_DATE_DAY))
+    error(('date %d-%02d-%02d is less than minimum allowed %s'):
+        format(y, M, d, MIN_DATE_TEXT))
 ::max_err::
-    error(('date %d-%02d-%02d is greater than maximum allowed %d-%02d-%02d'):
-        format(y, M, d, MAX_DATE_YEAR, MAX_DATE_MONTH, MAX_DATE_DAY))
+    error(('date %d-%02d-%02d is greater than maximum allowed %s'):
+        format(y, M, d, MAX_DATE_TEXT))
+end
+
+-- check v value against maximum/minimum possible values
+-- if there is nil then simply return default 0
+local function checked_max_value(v, max, txt)
+    if v == nil then
+        return 0
+    end
+    if type(v) ~= 'number' then
+        error(('numeric value expected, but received %s'):
+              format(type(v)), 2)
+    end
+    if v > -max and v < max then
+        return v
+    end
+    error(('value %s of %s is out of allowed range [%s, %s]'):
+            format(v, txt, -max, max), 4)
+end
+
+
+local function bool2int(b)
+    return b and 1 or 0
+end
+
+local function normalize_nsec(secs, nsec)
+    if nsec < 0 or nsec >= NANOS_PER_SEC then
+        secs = secs + math_floor(nsec / NANOS_PER_SEC)
+        nsec = nsec % NANOS_PER_SEC
+    end
+    return secs, nsec
+end
+
+local function interval_decouple_args(obj)
+    if is_interval(obj) then
+        return obj.year, obj.month, obj.sec, obj.nsec
+    end
+    local year = checked_max_value(obj.year, MAX_YEAR_RANGE, 'year')
+    local month = checked_max_value(obj.month, MAX_MONTH_RANGE, 'month')
+
+    local secs = 0
+    secs = secs + (7 * SECS_PER_DAY) *
+                  checked_max_value(obj.week, MAX_WEEK_RANGE, 'week')
+    secs = secs + SECS_PER_DAY * checked_max_value(obj.day, MAX_DAY_RANGE, 'day')
+    secs = secs + (60 * 60) * checked_max_value(obj.hour, MAX_HOUR_RANGE, 'hour')
+    secs = secs + 60 * checked_max_value(obj.min, MAX_MIN_RANGE, 'min')
+    local sec = checked_max_value(obj.sec, MAX_SEC_RANGE, 'sec')
+    local nsec, usec, msec = obj.nsec, obj.usec, obj.msec
+    local count_usec = bool2int(nsec ~= nil) + bool2int(usec ~= nil) +
+                       bool2int(msec ~= nil)
+    if count_usec > 0 then
+        if count_usec > 1 then
+            error('only one of nsec, usec or msecs may be defined '..
+                  'simultaneously', 3)
+        end
+        if sec ~= nil then
+            local _, fraction = math_modf(sec)
+            -- if there are separate nsec, usec, or msec provided then
+            -- seconds should be integer
+            if fraction ~= 0 then
+                error('only integer values allowed in interval seconds '..
+                      'if nsec, usec, or msecs provided', 2)
+            end
+        end
+    end
+    secs = secs + (sec or 0)
+    nsec = (msec or 0) * 1e6 + (usec or 0) * 1e3 + (nsec or 0)
+    secs, nsec = normalize_nsec(secs, nsec)
+
+    return year, month, secs, nsec
+end
+
+local function interval_new(obj)
+    local ival = ffi.new(interval_t)
+    if obj == nil then
+        return ival
+    end
+    check_table(obj, 'interval.new()')
+    ival.year, ival.month, ival.sec, ival.nsec = interval_decouple_args(obj)
+    return ival
+end
+
+local function interval_init(year, month, sec, nsec)
+    return ffi.new(interval_t, sec, nsec, month, year)
 end
 
 local function nyi(msg)
@@ -205,29 +398,28 @@ local function local_dt(obj)
     return builtin.tnt_dt_from_rdn(local_rd(local_secs(obj)))
 end
 
-local function datetime_cmp(lhs, rhs)
+local function datetime_cmp(lhs, rhs, raising)
     if not is_datetime(lhs) or not is_datetime(rhs) then
-        return nil
+        if raising then
+            error('incompatible types for datetime comparison', 3)
+        else
+            return nil
+        end
     end
     local sdiff = lhs.epoch - rhs.epoch
     return sdiff ~= 0 and sdiff or (lhs.nsec - rhs.nsec)
 end
 
 local function datetime_eq(lhs, rhs)
-    local rc = datetime_cmp(lhs, rhs)
-    return rc == 0
+    return datetime_cmp(lhs, rhs, false) == 0
 end
 
 local function datetime_lt(lhs, rhs)
-    local rc = datetime_cmp(lhs, rhs)
-    return rc == nil and error('incompatible types for comparison', 2) or
-           rc < 0
+    return datetime_cmp(lhs, rhs, true) < 0
 end
 
 local function datetime_le(lhs, rhs)
-    local rc = datetime_cmp(lhs, rhs)
-    return rc == nil and error('incompatible types for comparison', 2) or
-           rc <= 0
+    return datetime_cmp(lhs, rhs, true) <= 0
 end
 
 --[[
@@ -262,6 +454,10 @@ local function datetime_new_raw(epoch, nsec, tzoffset)
     return dt_obj
 end
 
+local function datetime_new_copy(obj)
+    return datetime_new_raw(obj.epoch, obj.nsec, obj.tzoffset)
+end
+
 local function datetime_new_dt(dt, secs, nanosecs, offset)
     local epoch = (dt - DAYS_EPOCH_OFFSET) * SECS_PER_DAY
     return datetime_new_raw(epoch + secs - offset * 60, nanosecs, offset)
@@ -276,10 +472,6 @@ local function get_timezone(offset, msg)
         error(('%s: string or number expected, but received %s'):
               format(msg, offset), 3)
     end
-end
-
-local function bool2int(b)
-    return b and 1 or 0
 end
 
 -- create datetime given attribute values from obj
@@ -420,6 +612,228 @@ local function datetime_tostring(self)
     return s
 end
 
+local function qtail(s)
+    return #s ~= 0 and (s .. ', ') or s
+end
+
+--[[
+    Convert to text interval values of different types
+
+    - depending on a values stored there generic interval
+      values may display in following format:
+        +12 secs
+        -23 minutes, 0 seconds
+        +12 hours, 23 minutes, 1 seconds
+        -7 days, -23 hours, -23 minutes, -1 seconds
+    - years will be displayed as
+        +10 years
+    - months will be displayed as:
+         +2 months
+]]
+local function interval_tostring(o)
+    check_interval(o, 'datetime.interval.tostring')
+    local s = ''
+    if o.year ~= 0 then
+        s = qtail(s) .. ('%+d years'):format(o.year)
+    end
+    if o.month ~= 0 then
+        s = qtail(s) .. ('%+d months'):format(o.month)
+    end
+    local sec, nsec = o.sec, o.nsec
+    if sec == 0 and nsec == 0 then
+        return #s > 0 and s or '0 seconds'
+    end
+    local abs_s = math_abs(sec)
+    if abs_s < 60 then
+        s = qtail(s) .. ('%+.9g seconds'):format(sec)
+    elseif abs_s < (60 * 60) then
+        s = qtail(s) .. ('%+d minutes, %.9g seconds'):
+                        format(o.min, math_fmod(sec, 60))
+    elseif abs_s < SECS_PER_DAY then
+        s = qtail(s) .. ('%+d hours, %d minutes, %.9g seconds'):
+                        format(o.hour, math_fmod(o.min, 60), math_fmod(sec, 60))
+    else
+        s = qtail(s) .. ('%+d days, %d hours, %d minutes, %.9g seconds'):
+                        format(o.day, math_fmod(o.hour, 24),
+                               math_fmod(o.min, 60), math_fmod(sec, 60))
+    end
+    if nsec > 0 then
+        s = qtail(s) .. ('%d nanoseconds'):format(nsec)
+    end
+    return s
+end
+
+local adjust_xlat = {
+    none = builtin.DT_LIMIT,
+    last = builtin.DT_SNAP,
+    excess = builtin.DT_EXCESS,
+}
+
+local function datetime_increment_by(self, direction, years, months,
+                                     seconds, nanoseconds, adjust)
+    -- operations with intervals should be done using local human dates
+    -- not UTC dates, thus normalize to local timezone before operations.
+    local dt = local_dt(self)
+    local secs, nsec = local_secs(self), self.nsec
+    local offset = self.tzoffset
+
+    local is_ym_updated = false
+    if adjust ~= nil then
+        local operation = direction >= 0 and 'addition' or 'subtraction'
+        check_table(adjust, operation)
+        adjust = adjust_xlat[adjust.adjust] or builtin.DT_SNAP
+    else
+        adjust = builtin.DT_SNAP
+    end
+
+    if years ~= 0 then
+        check_range(years, MIN_DATE_YEAR, MAX_DATE_YEAR, 'years')
+        local approx_dt = dt + direction * years * AVERAGE_DAYS_YEAR
+        check_dt(approx_dt, direction, years, 'years')
+        dt = builtin.tnt_dt_add_years(dt, direction * years, adjust)
+        is_ym_updated = true
+    end
+    if months ~= 0 then
+        local new_dt = dt + direction * months * AVERAGE_DAYS_MONTH
+        check_dt(new_dt, direction, months, 'months')
+        dt = builtin.tnt_dt_add_months(dt, direction * months, adjust)
+        is_ym_updated = true
+    end
+    if is_ym_updated then
+        secs = (dt - DAYS_EPOCH_OFFSET) * SECS_PER_DAY + secs % SECS_PER_DAY
+    end
+
+    if seconds ~= 0 then
+        local s, frac = math_modf(seconds)
+        secs = secs + direction * s
+        nsec = nsec + direction * frac * 1e9 -- FIXME - make sure it's integer
+    end
+
+    if nanoseconds ~= 0 then
+        nsec = nsec + direction * nanoseconds
+    end
+
+    secs, self.nsec = normalize_nsec(secs, nsec)
+    check_dt(math_floor((secs + SECS_EPOCH_OFFSET) / SECS_PER_DAY), direction)
+    self.epoch = utc_secs(secs, offset)
+    return self
+end
+
+local function date_first(lhs, rhs)
+    if is_datetime(lhs) then
+        return lhs, rhs
+    else
+        return rhs, lhs
+    end
+end
+
+local function error_incompatible(name)
+    error(("datetime:%s() - incompatible type of arguments"):
+          format(name), 3)
+end
+
+--[[
+Matrix of subtraction operands eligibility and their result type
+
+|                 | datetime | interval | table    |
++-----------------+----------+----------+----------+
+| datetime        | interval | datetime | datetime |
+| interval        |          | interval | interval |
+| table           |          |          |          |
+]]
+local function datetime_interval_sub(lhs, rhs)
+    check_date_interval(lhs, "operator -")
+    check_date_interval_table(rhs, "operator -")
+    local left_interval = is_table(lhs) or ffi.typeof(lhs) == interval_t
+    local right_interval = is_table(rhs) or ffi.typeof(rhs) == interval_t
+    local year, month, secs, nsec
+
+    -- left is date, right is interval
+    if not left_interval and right_interval then
+        year, month, secs, nsec = interval_decouple_args(rhs)
+        return datetime_increment_by(datetime_new_copy(lhs), -1, year, month,
+                                     secs, nsec)
+    -- left is date, right is date
+    elseif not left_interval and not right_interval then
+        local obj = interval_new()
+        obj.sec, obj.nsec = normalize_nsec(lhs.epoch - rhs.epoch,
+                                           lhs.nsec - rhs.nsec)
+        return obj
+    -- both left and right are intervals
+    elseif left_interval and right_interval then
+        year, month, secs, nsec = interval_decouple_args(lhs)
+        local obj = interval_init(year, month, secs, nsec)
+        year, month, secs, nsec = interval_decouple_args(rhs)
+        obj.year = obj.year - year
+        obj.month = obj.month - month
+        obj.sec, obj.nsec = normalize_nsec(obj.sec - secs, obj.nsec - nsec)
+        return obj
+    else
+        error_incompatible("operator -")
+    end
+end
+
+--[[
+Matrix of addition operands eligibility and their result type
+
+|                 | datetime | interval | table    |
++-----------------+----------+----------+----------+
+| datetime        |          | datetime | datetime |
+| interval        | datetime | interval | interval |
+| table           |          |          |          |
+]]
+local function datetime_interval_add(lhs, rhs)
+    local lhs, rhs = date_first(lhs, rhs)
+
+    check_date_interval(lhs, "operator +")
+    check_interval_table(rhs, "operator +")
+    local left_interval = is_table(lhs) or ffi.typeof(lhs) == interval_t
+    local right_interval = is_table(rhs) or ffi.typeof(rhs) == interval_t
+    local year, month, secs, nsec
+
+    -- left is date, right is interval
+    if not left_interval and right_interval then
+        local obj = datetime_new_copy(lhs)
+        year, month, secs, nsec = interval_decouple_args(rhs)
+        return datetime_increment_by(obj, 1, year, month, secs, nsec)
+    -- both left and right are intervals
+    elseif left_interval and right_interval then
+        year, month, secs, nsec = interval_decouple_args(lhs)
+        local obj = interval_init(year, month, secs, nsec)
+        year, month, secs, nsec = interval_decouple_args(rhs)
+        obj.year = obj.year + year
+        obj.month = obj.month + month
+        obj.sec, obj.nsec = normalize_nsec(obj.sec + secs, obj.nsec + nsec)
+        return obj
+    else
+        error_incompatible("operator +")
+    end
+end
+
+local function interval_cmp(lhs, rhs, raising)
+    if not is_interval(lhs) or not is_interval(rhs) then
+        if raising then
+            error('incompatible types for interval comparison', 3)
+        else
+            return nil
+        end
+    end
+    local sdiff = lhs.sec - rhs.sec
+    return sdiff ~= 0 and sdiff or (lhs.nsec - rhs.nsec)
+end
+
+local function interval_eq(lhs, rhs)
+    return interval_cmp(lhs, rhs, false) == 0
+end
+
+local function interval_lt(lhs, rhs)
+    return interval_cmp(lhs, rhs, true) < 0
+end
+
+local function interval_le(lhs, rhs)
+    return interval_cmp(lhs, rhs, true) <= 0
+end
+
 --[[
     Create datetime object representing current time using microseconds
     platform timer and local timezone information.
@@ -428,6 +842,17 @@ local function datetime_now()
     local d = datetime_new_raw(0, 0, 0)
     builtin.tnt_datetime_now(d)
     return d
+end
+
+-- addition or subtraction from date/time of a given interval
+-- described via table direction should be +1 or -1
+local function datetime_shift(self, o, direction, adjust)
+    assert(direction == -1 or direction == 1)
+    local title = direction > 0 and "datetime.add" or "datetime.sub"
+    check_interval_table(o, title)
+
+    local year, month, secs, nsec = interval_decouple_args(o)
+    return datetime_increment_by(self, direction, year, month, secs, nsec, adjust)
 end
 
 --[[
@@ -665,6 +1090,12 @@ local datetime_index_functions = {
     format = datetime_format,
     totable = datetime_totable,
     set = datetime_set,
+    add = function(self, obj, adjust)
+            return datetime_shift(self, obj, 1, adjust)
+          end,
+    sub = function(self, obj, adjust)
+            return datetime_shift(self, obj, -1, adjust)
+          end,
 }
 
 local function datetime_index(self, key)
@@ -680,11 +1111,62 @@ ffi.metatype(datetime_t, {
     __eq = datetime_eq,
     __lt = datetime_lt,
     __le = datetime_le,
+    __sub = datetime_interval_sub,
+    __add = datetime_interval_add,
     __index = datetime_index,
 })
 
-return setmetatable({
-    new         = datetime_new,
-    now         = datetime_now,
-    is_datetime = is_datetime,
-}, {})
+local function total_secs(self)
+    return self.sec + self.nsec / 1e9
+end
+
+local interval_index_fields = {
+    usec = function(self) return math_floor(self.nsec / 1e3) end,
+    msec = function(self) return math_floor(self.nsec / 1e6) end,
+
+    week = function(self)
+        return (math_modf(total_secs(self) / (7 * SECS_PER_DAY)))
+    end,
+    day = function(self)
+        return (math_modf(total_secs(self) / SECS_PER_DAY))
+    end,
+    hour = function(self)
+        return (math_modf(total_secs(self) / (60 * 60)))
+    end,
+    min =  function(self)
+        return (math_modf(total_secs(self) / 60))
+    end,
+}
+
+local interval_index_functions = {
+    __serialize = interval_tostring,
+}
+
+local function interval_index(self, key)
+    local handler_field = interval_index_fields[key]
+    return handler_field ~= nil and handler_field(self) or
+           interval_index_functions[key]
+end
+
+ffi.metatype(interval_t, {
+    __tostring = interval_tostring,
+    __eq = interval_eq,
+    __lt = interval_lt,
+    __le = interval_le,
+    __sub = datetime_interval_sub,
+    __add = datetime_interval_add,
+    __index = interval_index,
+})
+
+local interval_mt = {
+    new     = interval_new,
+}
+
+return setmetatable(
+    {
+        new         = datetime_new,
+        interval    = setmetatable(interval_mt, interval_mt),
+        now         = datetime_now,
+        is_datetime = is_datetime,
+    }, {}
+)
