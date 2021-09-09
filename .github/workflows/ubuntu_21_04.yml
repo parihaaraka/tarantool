@@ -6,7 +6,10 @@ on:
   repository_dispatch:
     types: [backend_automation]
   workflow_dispatch:
-
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress:  ${{ github.ref != 'refs/heads/master' &&
+    !startsWith(github.ref, 'refs/heads/1.10') && !startsWith(github.ref, 'refs/heads/2.') }}
 jobs:
   ubuntu_21_04:
     # We want to run on external PRs, but not on our own internal PRs
