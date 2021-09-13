@@ -1390,15 +1390,11 @@ memtx_tx_handle_gap_write(struct txn *txn, struct space *space,
 			 * Old tracker is left in one gap, let's copy tracker
 			 * to another.
 			 */
-			struct gap_item *copy =
-				memtx_tx_gap_item_new(item->txn, item->type,
-						      item->key,
-						      item->part_count);
-			if (copy == NULL)
+			// TODO: to add flag for the case where simple tracker allcation is necessary
+			if (memtx_tx_track_gap(item->txn, space, index, tuple,
+					       item->type, item->key,
+					       item->part_count) != 0)
 				return -1;
-
-			rlist_add(&story->link[ind].nearby_gaps,
-				  &copy->in_nearby_gaps);
 		}
 	}
 	return 0;
@@ -2129,23 +2125,17 @@ memtx_tx_track_read(struct txn *txn, struct space *space, struct tuple *tuple)
 	if (space->def->opts.is_ephemeral)
 		return 0;
 
+	struct memtx_story *story = NULL;
 	if (tuple->is_dirty) {
-		struct memtx_story *story = memtx_tx_story_get(tuple);
-		return memtx_tx_track_read_story(txn, space, story, UINT64_MAX);
+		story = memtx_tx_story_get(tuple);
 	} else {
-		struct memtx_story *story = memtx_tx_story_new(space, tuple);
+		story = memtx_tx_story_new(space, tuple);
 		if (story == NULL)
 			return -1;
-		struct tx_read_tracker *tracker;
-		tracker = tx_read_tracker_new(txn, story, UINT64_MAX);
-		if (tracker == NULL) {
-			memtx_tx_story_delete(story);
-			return -1;
-		}
-		rlist_add(&story->reader_list, &tracker->in_reader_list);
-		rlist_add(&txn->read_set, &tracker->in_read_set);
-		return 0;
 	}
+
+	// TODO: to add flag for the case where simple tracker allcation is necessary
+	return memtx_tx_track_read_story(txn, space, story, UINT64_MAX);
 }
 
 /**
