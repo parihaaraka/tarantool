@@ -183,6 +183,12 @@ void
 memtx_tx_manager_free();
 
 /**
+ * Fulfill delayed operations on yield moment (used by the on_yield trigger).
+ */
+int
+memtx_tx_on_yield(struct txn *txn);
+
+/**
  * Transaction providing DDL changes is disallowed to yield after
  * modifications of internal caches (i.e. after ALTER operation finishes).
  */
@@ -290,6 +296,7 @@ memtx_tx_tuple_clarify_slow(struct txn *txn, struct space *space,
 
 /**
  * Record in TX manager that a transaction @txn have read a @tuple in @space.
+ * If @a txn yields than @a tuple must be referenced until this moment.
  * @return 0 on success, -1 on memory error.
  */
 int
@@ -326,9 +333,10 @@ memtx_tx_track_point(struct txn *txn, struct space *space,
  * Helper of memtx_tx_track_gap.
  */
 int
-memtx_tx_track_gap_slow(struct txn *txn, struct space *space, struct index *index,
-			struct tuple *successor, enum iterator_type type,
-			const char *key, uint32_t part_count);
+memtx_tx_track_gap_proxy(struct txn *txn, struct space *space,
+			 struct index *index, struct tuple *successor,
+			 enum iterator_type type, const char *key,
+			 uint32_t part_count);
 
 /**
  * Record in TX manager that a transaction @a txn have read nothing
@@ -351,8 +359,8 @@ memtx_tx_track_gap(struct txn *txn, struct space *space, struct index *index,
 	/* Skip ephemeral spaces. */
 	if (space == NULL || space->def->id == 0)
 		return 0;
-	return memtx_tx_track_gap_slow(txn, space, index, successor,
-				       type, key, part_count);
+	return memtx_tx_track_gap_proxy(txn, space, index, successor,
+					type, key, part_count);
 }
 
 /**
