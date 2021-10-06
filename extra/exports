@@ -417,6 +417,7 @@ title_set_status
 title_update
 tnt_datetime_now
 tnt_datetime_strftime
+tnt_datetime_strptime
 tnt_datetime_to_string
 tnt_default_cert_dir_paths
 tnt_default_cert_file_paths
