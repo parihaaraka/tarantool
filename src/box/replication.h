@@ -156,6 +156,11 @@ extern bool replication_skip_conflict;
 extern bool replication_anon;
 
 /**
+ * Whether this replica will receive replication stream in a separate thread.
+ */
+extern bool replication_in_thread;
+
+/**
  * Wait for the given period of time before trying to reconnect
  * to a master.
  */
@@ -176,7 +181,7 @@ replication_disconnect_timeout(void)
 }
 
 void
-replication_init(void);
+replication_init(bool in_thread);
 
 void
 replication_free(void);

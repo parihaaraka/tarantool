@@ -3542,7 +3542,7 @@ box_cfg_xc(void)
 	gc_init();
 	engine_init();
 	schema_init();
-	replication_init();
+	replication_init(cfg_getb("replication_in_thread"));
 	port_init();
 	iproto_init(cfg_geti("iproto_threads"));
 	sql_init();

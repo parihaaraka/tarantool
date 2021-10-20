@@ -56,6 +56,8 @@
 #include "txn_limbo.h"
 #include "journal.h"
 #include "raft.h"
+#include "tt_static.h"
+#include "backtrace.h"
 
 STRS(applier_state, applier_STATE);
 
@@ -64,6 +66,13 @@ enum {
 	 * How often to log received row count. Used during join and register.
 	 */
 	ROWS_PER_LOG = 100000,
+	/**
+	 * How many transactions may pile up in applier thread.
+	 */
+	THREAD_BATCH_SIZE = 1000,
+	THREAD_IBUF_SIZE = THREAD_BATCH_SIZE * 10,
+	AUX_IBUF_SIZE = THREAD_BATCH_SIZE * sizeof(struct applier_tx) *
+			sizeof(struct applier_tx_row),
 };
 
 static inline void
@@ -207,6 +216,7 @@ applier_writer_f(va_list ap)
 			if (likely(r != NULL))
 				xrow.tm = r->applier_txn_last_tm;
 			coio_write_xrow(&io, &xrow);
+			//say_warn("Sent ack from tx.");
 			ERROR_INJECT(ERRINJ_APPLIER_SLOW_ACK, {
 				fiber_sleep(0.01);
 			});
@@ -525,7 +535,8 @@ applier_fetch_snapshot(struct applier *applier)
 }
 
 static uint64_t
-applier_read_tx(struct applier *applier, struct stailq *rows, double timeout);
+applier_read_tx(struct applier *applier, struct stailq *rows, double timeout,
+		bool save_input);
 
 static int
 apply_final_join_tx(uint32_t replica_id, struct stailq *rows);
@@ -540,6 +551,11 @@ struct applier_tx_row {
 	struct xrow_header row;
 };
 
+static void *
+fiber_gc_alloc(size_t size)
+{
+	return region_alloc
+}
 static uint64_t
 applier_wait_register(struct applier *applier, uint64_t row_count)
 {
@@ -558,7 +574,8 @@ applier_wait_register(struct applier *applier, uint64_t row_count)
 	 */
 	while (true) {
 		struct stailq rows;
-		row_count += applier_read_tx(applier, &rows, TIMEOUT_INFINITY);
+		row_count += applier_read_tx(applier, &rows, TIMEOUT_INFINITY,
+					     false);
 		while (row_count >= next_log_cnt) {
 			say_info("%.1fM rows received", next_log_cnt / 1e6);
 			next_log_cnt += ROWS_PER_LOG;
@@ -647,13 +664,15 @@ applier_join(struct applier *applier)
 }
 
 static struct applier_tx_row *
-applier_read_tx_row(struct applier *applier, double timeout)
+applier_read_tx_row(struct applier *applier, double timeout,
+		    bool save_input)
 {
 	struct ev_io *coio = &applier->io;
 	struct ibuf *ibuf = &applier->ibuf;
+	region = &fiber()->gc;
 	size_t size;
 	struct applier_tx_row *tx_row =
-		region_alloc_object(&fiber()->gc, typeof(*tx_row), &size);
+		region_alloc_object(region, typeof(*tx_row), &size);
 
 	if (tx_row == NULL)
 		tnt_raise(OutOfMemory, size, "region_alloc_object", "tx_row");
@@ -662,8 +681,11 @@ applier_read_tx_row(struct applier *applier, double timeout)
 
 	ERROR_INJECT_YIELD(ERRINJ_APPLIER_READ_TX_ROW_DELAY);
 
-	coio_read_xrow_timeout_xc(coio, ibuf, row, timeout);
-
+	if (save_input) {
+		coio_read_xrow_ex_timeout_xc(coio, ibuf, row, timeout);
+	} else {
+		coio_read_xrow_timeout_xc(coio, ibuf, row, timeout);
+	}
 	if (row->tm > 0)
 		applier->lag = ev_now(loop()) - row->tm;
 	applier->last_row_time = ev_monotonic_now(loop());
@@ -671,9 +693,11 @@ applier_read_tx_row(struct applier *applier, double timeout)
 }
 
 static int64_t
-set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn)
+set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn,
+		bool save_input)
 {
 	struct xrow_header *row = &tx_row->row;
+	struct region *region = &fiber()->gc;
 
 	if (iproto_type_is_error(row->type))
 		xrow_decode_error_xc(row);
@@ -708,14 +732,13 @@ set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn)
 	if (row->is_commit) {
 		/* Signal the caller that we've reached the tx end. */
 		tsn = 0;
-	} else if (row->bodycnt == 1) {
+	}
+	if (row->bodycnt == 1 && !save_input) {
 		/*
-		 * Save row body to gc region. Not done for single-statement
-		 * transactions and the last row of multi-statement transactions
-		 * knowing that the input buffer will not be used while the
-		 * transaction is applied.
+		 * Save row body to gc region, since the input buffer may be
+		 * reused.
 		 */
-		void *new_base = region_alloc(&fiber()->gc, row->body->iov_len);
+		void *new_base = region_alloc(region, row->body->iov_len);
 		if (new_base == NULL)
 			tnt_raise(OutOfMemory, row->body->iov_len, "region",
 				  "xrow body");
@@ -736,16 +759,17 @@ set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn)
  * network input space is reused for the next xrow.
  */
 static uint64_t
-applier_read_tx(struct applier *applier, struct stailq *rows, double timeout)
+applier_read_tx(struct applier *applier, struct stailq *rows, double timeout,
+		bool save_input)
 {
 	int64_t tsn = 0;
 	uint64_t row_count = 0;
 
 	stailq_create(rows);
 	do {
-		struct applier_tx_row *tx_row = applier_read_tx_row(applier,
-								    timeout);
-		tsn = set_next_tx_row(rows, tx_row, tsn);
+		struct applier_tx_row *tx_row =
+			applier_read_tx_row(applier, timeout, save_input);
+		tsn = set_next_tx_row(rows, tx_row, tsn, save_input);
 		++row_count;
 	} while (tsn != 0);
 	return row_count;
@@ -1243,6 +1267,376 @@ applier_on_rollback(struct trigger *trigger, void *event)
 	return 0;
 }
 
+struct applier_tx {
+	struct stailq_entry next;
+	struct stailq rows;
+};
+
+static void
+applier_process_batch(struct cmsg *base)
+{
+	struct applier_msg *msg = (struct applier_msg *) base;
+	struct applier *applier = msg->applier;
+	struct applier_tx *tx;
+	//say_warn("Receive a batch %c with %d transactions", msg->code, msg->txn_cnt);
+	stailq_foreach_entry(tx, &msg->txs, next) {
+		struct xrow_header *first_row =
+			&stailq_first_entry(&tx->rows,
+					    struct applier_tx_row,
+					    next)->row;
+		raft_process_heartbeat(box_raft(), applier->instance_id);
+		//say_warn("Receive row: %lld", first_row->lsn);
+		if (first_row->lsn == 0) {
+			if (unlikely(iproto_type_is_raft_request(
+							first_row->type))) {
+				if (applier_handle_raft(applier,
+							first_row) != 0)
+					diag_raise();
+			}
+			applier_signal_ack(applier);
+		} else if (applier_apply_tx(applier, &tx->rows) != 0) {
+			diag_raise();
+		}
+	}
+	//say_warn("Finished batch %c processing", msg->code);
+	vclock_copy(&msg->ack_vclock, &replicaset.vclock);
+}
+
+static void
+applier_send_ack(struct cmsg *base)
+{
+	struct applier_msg *msg = (struct applier_msg *) base;
+	struct applier *applier = msg->applier;
+	msg->txn_cnt = 0;
+	struct applier_tx *tx, *next;
+	//assert(ibuf_used(&msg->ibuf) == 0);
+	ibuf_reset(&msg->ibuf);
+	//assert(ibuf_user(&msg->tx_buf) == 0); XXX: not so
+	ibuf_reset(&msg->tx_buf);
+	stailq_create(&msg->txs);
+	fiber_wakeup(applier->thread.reader);
+	//say_warn("Send ack from thread.");
+	// TODO: process an ack.
+}
+
+static void
+applier_msg_init(struct applier *applier, struct applier_msg *msg)
+{
+	memset(msg, 0, sizeof(*msg));
+	msg->applier = applier;
+	stailq_create(&msg->txs);
+	ibuf_create(&msg->ibuf, &cord()->slabc, THREAD_IBUF_SIZE);
+	ibuf_create(&msg->aux_ibuf, &cord()->slabc, AUX_IBUF_SIZE);
+}
+
+static inline struct applier_msg *
+applier_thread_cur_msg(struct applier *applier)
+{
+	return &applier->thread.msgs[applier->thread.msg_ptr];
+}
+
+static inline struct applier_msg *
+applier_thread_next_msg(struct applier *appleir)
+{
+	return &applier->thread.msgs[(applier->thread.msg_ptr + 1) % 2];
+}
+
+static inline struct applier_msg *
+applier_thread_switch_msg(struct applier *applier)
+{
+	applier->thread.msg_ptr = (applier->thread.msg_ptr + 1) % 2;
+	return applier_thread_cur_msg(applier);
+}
+
+static inline size_t
+move_unparsed(struct ibuf *oldbuf, struct ibuf *newbuf)
+{
+	size_t used = ibuf_used(oldbuf);
+	if (used > 0) {
+		void *ptr = ibuf_alloc(newbuf, used);
+		if (ptr == NULL) {
+			panic("Failed to allocate memory for incoming "
+			      "transactions in applier thread");
+		}
+		memcpy(ptr, oldbuf->rpos, used);
+		oldbuf->wpos -= used;
+	}
+	return used;
+}
+
+static int
+applier_msg_switch_on_flush(struct trigger *trig, void *)
+{
+	struct applier *applier = (struct applier *)data;
+	(void)trig;
+	struct applier_msg *old, *cur;
+	old = applier_thread_cur_msg(applier);
+	cur = applier_thread_switch_msg(applier);
+
+	move_unparsed(&old->ibuf, &cur->ibuf);
+	move_unparsed(&old->aux_buf, &cur->aux_buf);
+	applier->ibuf = &cur->ibuf;
+	applier->aux_buf = &cur->aux_buf;
+	return 0;
+}
+
+static void
+applier_push_batch(struct applier *applier, struct applier_tx *tx)
+{
+	static __thread struct cmsg_hop route[2];
+	route[0].f = applier_process_batch;
+	route[0].pipe = &applier->thread.pipe;
+	route[1].f = applier_send_ack;
+	route[1].pipe = NULL;
+
+	struct applier_msg *cur_msg = applier_thread_cur_msg(applier);
+	stailq_add_tail_entry(&cur_msg->txs, tx, next);
+	cur_msg->txn_cnt++;
+	if (cur_msg->txn_cnt >= THREAD_BATCH_SIZE) {
+		say_warn("Batch %c hit max size", cur_msg->code);
+		fiber_yield();
+		cur_msg = applier_thread_cur_msg(applier);
+	}
+	struct applier_msg *other_msg = applier_thread_next_msg(applier);
+	/*
+	 * Only push the message once the other message returns && not pushed
+	 * already. Append to the not-yet-flushed message.
+	 */
+	if (applier->thread.tx_pipe.n_input > 0 || other_msg->txn_cnt > 0)
+		return;
+
+	//say_warn("Batch %c push", cur_msg->code);
+	cmsg_init(&cur_msg->base, route);
+	cpipe_push(&applier->thread.tx_pipe, &cur_msg->base);
+}
+
+static int
+applier_thread_reader_f(va_list ap)
+{
+	struct applier *applier = va_arg(ap, struct applier *);
+
+	int rc = 0;
+
+	struct trigger on_flush;
+	trigger_create(&on_flush, applier_msg_switch_on_flush, applier, NULL);
+	trigger_add(&applier->thread.tx_pipe.on_flush, &on_flush);
+
+	while (true) {
+		struct applier_tx *tx =
+			(struct applier_tx *)ibuf_alloc(&applier->aux_buf,
+							sizeof(*tx));
+		if (tx == NULL) {
+			// XXX: panic or wait?
+			panic("err");
+		}
+		try {
+			applier_read_tx(applier, &tx->rows,
+					replication_disconnect_timeout(),
+					true);
+		} catch (FiberIsCancelled *e) {
+			rc = -1;
+			break;
+		} catch (Exception *e) {
+			rc = -1;
+			applier->thread.cancelled = true;
+			fiber_wakeup(applier->thread.writer);
+			break;
+		}
+		applier_push_batch(applier, tx, &current);
+	}
+
+	trigger_clear(&on_flush);
+	return rc;
+}
+
+static void
+applier_thread_notify_shutdown(void *arg)
+{
+	struct applier *applier = (struct applier *)arg;
+	assert(!applier->in_shutdown);
+	applier->in_shutdown = true;
+}
+
+static inline void
+applier_thread_loop(struct applier *applier)
+{
+	while (true) {
+		cbus_process(&applier->thread.endpoint);
+		if (applier->thread.cancelled)
+			break;
+		fiber_yield();
+	}
+}
+
+static int
+applier_thread_init(struct applier *applier)
+{
+	int rc;
+	rc = cbus_endpoint_create(&applier->thread.endpoint,
+				  tt_sprintf("applier_%p_thread", applier),
+				  fiber_schedule_cb, fiber());
+	assert(rc == 0);
+	(void)rc;
+	cbus_pair(tt_sprintf("applier_%p", applier), applier->thread.endpoint.name,
+		  &applier->thread.tx_pipe, &applier->thread.pipe, NULL, NULL,
+		  cbus_process);
+
+	applier->thread.writer = fiber();
+	applier->thread.reader = fiber_new("reader", applier_thread_reader_f);
+	if (applier->thread.reader == NULL)
+		return -1;
+	fiber_set_joinable(applier->thread.reader, true);
+
+	applier_msg_init(&applier->thread.msgs[0]);
+	applier_msg_init(&applier->thread.msgs[1]);
+
+	applier->thread.msg_ptr = 0;
+	applier->thread.cancelled = false;
+
+	applier->ibuf = &applier->thread.msgs[0].ibuf;
+	applier->aux_buf = &applier->thread.msgs[0].aux_buf;
+
+	return 0;
+}
+
+static int
+applier_thread_subscribe_f(va_list ap)
+{
+	struct applier *applier = va_arg(ap, struct applier *);
+
+	int rc;
+	fiber_start(applier->thread.reader, applier);
+	try {
+		applier_thread_loop(applier);
+	} catch (Exception *e) {
+		rc = -1;
+	}
+
+	if (!fiber_is_dead(applier->thread.reader) && applier->thread.reader->fid != 0)
+		fiber_cancel(applier->thread.reader);
+	rc = fiber_join(applier->thread.reader);
+
+	cbus_unpair(&applier->thread.tx_pipe, &applier->thread.pipe,
+		    applier_thread_notify_shutdown, applier, cbus_process);
+	cbus_endpoint_destroy(&applier->thread.endpoint, NULL);
+
+	region_free(&applier->thread.region);
+
+	return rc;
+}
+
+struct applier_cfg_msg {
+	struct cmsg base;
+	struct applier *applier;
+};
+
+static void
+applier_thread_stop_f(struct cmsg *base)
+{
+	struct applier_cfg_msg *msg = (struct applier_cfg_msg *)base;
+	msg->applier->thread.cancelled = true;
+}
+
+static void
+applier_thread_stop(struct applier *applier)
+{
+	struct applier_cfg_msg msg;
+	static struct cmsg_hop route = {applier_thread_stop_f, NULL};
+	cmsg_init(&msg.base, &route);
+	msg.applier = applier;
+	cpipe_push(&applier->thread.pipe, &msg.base);
+	while (!applier->in_shutdown || applier->tx_endpoint.n_pipes > 0) {
+		fiber_yield();
+		cbus_process(&applier->tx_endpoint);
+	}
+}
+
+static int
+applier_thread_subscribe(struct applier *applier)
+{
+	if (cord_costart(&applier->thread.cord,
+			 tt_sprintf("applier_%s", applier->source),
+			 applier_thread_subscribe_f, applier) != 0) {
+		return -1;
+	}
+	applier->in_shutdown = false;
+
+	int rc = cbus_endpoint_create(&applier->tx_endpoint,
+				      tt_sprintf("applier_%p", applier),
+				      fiber_schedule_cb, fiber());
+	assert(rc == 0);
+
+	while (true) {
+		cbus_process(&applier->tx_endpoint);
+		if (applier->in_shutdown && applier->tx_endpoint.n_pipes == 0)
+			break;
+		fiber_yield();
+
+		if (fiber_is_cancelled()) {
+			applier_thread_stop(applier);
+			break;
+		}
+	}
+
+	cbus_endpoint_destroy(&applier->tx_endpoint, NULL);
+
+	rc = cord_cojoin(&applier->thread.cord);
+
+
+	return rc;
+}
+
+static void
+applier_subscribe_f(struct applier *applier)
+{
+	struct ibuf *ibuf = &applier->ibuf;
+	while (true) {
+		if (applier->state == APPLIER_FINAL_JOIN &&
+		    instance_id != REPLICA_ID_NIL) {
+			say_info("final data received");
+			applier_set_state(applier, APPLIER_JOINED);
+			applier_set_state(applier, APPLIER_READY);
+			applier_set_state(applier, APPLIER_FOLLOW);
+		}
+
+		/*
+		 * Tarantool < 1.7.7 does not send periodic heartbeat
+		 * messages so we can't assume that if we haven't heard
+		 * from the master for quite a while the connection is
+		 * broken - the master might just be idle.
+		 */
+		double timeout = applier->version_id < version_id(1, 7, 7) ?
+				 TIMEOUT_INFINITY :
+				 replication_disconnect_timeout();
+
+		struct stailq rows;
+		applier_read_tx(applier, &rows, timeout, fiber_gc_alloc, false);
+
+		/*
+		 * In case of an heartbeat message wake a writer up
+		 * and check applier state.
+		 */
+		struct xrow_header *first_row =
+			&stailq_first_entry(&rows, struct applier_tx_row,
+					    next)->row;
+		raft_process_heartbeat(box_raft(), applier->instance_id);
+		if (first_row->lsn == 0) {
+			if (unlikely(iproto_type_is_raft_request(
+							first_row->type))) {
+				if (applier_handle_raft(applier,
+							first_row) != 0)
+					diag_raise();
+			}
+			applier_signal_ack(applier);
+		} else if (applier_apply_tx(applier, &rows) != 0) {
+			diag_raise();
+		}
+
+		if (ibuf_used(ibuf) == 0)
+			ibuf_reset(ibuf);
+	}
+}
+
 /**
  * Execute and process SUBSCRIBE request (follow updates from a master).
  */
@@ -1378,50 +1772,11 @@ applier_subscribe(struct applier *applier)
 	/*
 	 * Process a stream of rows from the binary log.
 	 */
-	while (true) {
-		if (applier->state == APPLIER_FINAL_JOIN &&
-		    instance_id != REPLICA_ID_NIL) {
-			say_info("final data received");
-			applier_set_state(applier, APPLIER_JOINED);
-			applier_set_state(applier, APPLIER_READY);
-			applier_set_state(applier, APPLIER_FOLLOW);
-		}
-
-		/*
-		 * Tarantool < 1.7.7 does not send periodic heartbeat
-		 * messages so we can't assume that if we haven't heard
-		 * from the master for quite a while the connection is
-		 * broken - the master might just be idle.
-		 */
-		double timeout = applier->version_id < version_id(1, 7, 7) ?
-				 TIMEOUT_INFINITY :
-				 replication_disconnect_timeout();
-
-		struct stailq rows;
-		applier_read_tx(applier, &rows, timeout);
-
-		/*
-		 * In case of an heartbeat message wake a writer up
-		 * and check applier state.
-		 */
-		struct xrow_header *first_row =
-			&stailq_first_entry(&rows, struct applier_tx_row,
-					    next)->row;
-		raft_process_heartbeat(box_raft(), applier->instance_id);
-		if (first_row->lsn == 0) {
-			if (unlikely(iproto_type_is_raft_request(
-							first_row->type))) {
-				if (applier_handle_raft(applier,
-							first_row) != 0)
-					diag_raise();
-			}
-			applier_signal_ack(applier);
-		} else if (applier_apply_tx(applier, &rows) != 0) {
+	if (replication_in_thread) {
+		if (applier_thread_subscribe(applier) != 0)
 			diag_raise();
-		}
-
-		if (ibuf_used(ibuf) == 0)
-			ibuf_reset(ibuf);
+	} else {
+		applier_subscribe_f(applier);
 	}
 }
 

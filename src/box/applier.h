@@ -1,4 +1,5 @@
 #ifndef TARANTOOL_APPLIER_H_INCLUDED
+
 #define TARANTOOL_APPLIER_H_INCLUDED
 /*
  * Copyright 2010-2016, Tarantool AUTHORS, please see AUTHORS file.
@@ -42,6 +43,7 @@
 #include "trivia/util.h"
 #include "uuid/tt_uuid.h"
 #include "uri/uri.h"
+#include "cbus.h"
 
 #include "xrow.h"
 
@@ -69,6 +71,21 @@ enum { APPLIER_SOURCE_MAXLEN = 1024 }; /* enough to fit URI with passwords */
 /** States for the applier */
 ENUM(applier_state, applier_STATE);
 extern const char *applier_state_strs[];
+
+/*
+ * Applier in-thread definitions.
+ */
+struct applier_msg {
+	struct cmsg base;
+	struct applier *applier;
+	struct vclock ack_vclock;
+	struct stailq txs;
+	/** This message's personal input buffer. */
+	struct ibuf ibuf;
+	/** An ibuf used to allocate auxiliary structures. */
+	struct ibuf aux_buf;
+	int txn_cnt;
+};
 
 /**
  * State of a replication connection to the master
@@ -131,6 +148,29 @@ struct applier {
 	struct diag diag;
 	/* Master's vclock at the time of SUBSCRIBE. */
 	struct vclock remote_vclock_at_subscribe;
+	/* Only used for applier in-thread. */
+	struct cbus_endpoint tx_endpoint;
+	bool in_shutdown;
+	struct {
+		struct cord cord;
+		struct applier_msg msgs[2];
+		int msg_ptr;
+		struct cbus_endpoint endpoint;
+		struct cpipe tx_pipe;
+		struct cpipe pipe;
+		/** The fiber reading transactions from the net. */
+		struct fiber *reader;
+		/**
+		 * The main thread fiber, processing the endpoint data and
+		 * writing acks to the remote peer.
+		 */
+		struct fiber *writer;
+		/**
+		 * Whether the thread should exit. Used as a marker to break
+		 * from the message processing loop.
+		 */
+		bool cancelled;
+	} thread;
 };
 
 /**
