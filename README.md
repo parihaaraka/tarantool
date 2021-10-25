@@ -1,4 +1,4 @@
-# Tarantool
+#  Tarantool
 
 [![Build Status][travis-badge]][travis-url]
 [![Build Status][gitlab-ci-badge]][gitlab-ci-url]
