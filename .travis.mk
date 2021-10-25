@@ -170,7 +170,7 @@ build_coverage_debian:
 test_coverage_debian_no_deps: build_coverage_debian
 	make LuaJIT-test
 	# Enable --long tests for coverage
-	cd test && ./test-run.py --vardir ${VARDIR} --force $(TEST_RUN_EXTRA_PARAMS) --long
+	cd test && ./test-run.py --vardir ${VARDIR} --force $(TEST_RUN_EXTRA_PARAMS) --long --jobs 32
 	lcov --compat-libtool --directory src/ --capture --output-file coverage.info.tmp \
 		--rc lcov_branch_coverage=1 --rc lcov_function_coverage=1
 	lcov --compat-libtool --remove coverage.info.tmp 'tests/*' 'third_party/*' '/usr/*' \
