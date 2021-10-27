@@ -14,7 +14,7 @@ runs:
         # from time to time on `apt-get update`.
         export DEBIAN_FRONTEND=noninteractive
         # create packages
-        make -f .gitlab.mk package
+        #make -f .gitlab.mk package
         # deploy packages
         #
         # The automatic deployment is disabled for arm64, because
@@ -50,6 +50,7 @@ runs:
           mkdir -p ~/.gnupg
           echo 'digest-algo sha256' >> ~/.gnupg/gpg.conf
           #make -f .gitlab.mk deploy
-          createrepo_c --help
+          echo -e "****************\n${PATH}\n****************"
+          LD_LIBRARY_PATH=/usr/local/lib createrepo_c --help
         fi
       shell: bash
