@@ -1,4 +1,4 @@
-name: release_lto_clang11
+name: centos_7
 
 on:
   push:
@@ -7,11 +7,8 @@ on:
     types: [backend_automation]
   workflow_dispatch:
 
-env:
-  CI_MAKE: make -f .travis.mk
-
 jobs:
-  release_lto_clang11:
+  centos_7:
     # We want to run on external PRs, but not on our own internal PRs
     # as they'll be run by the push to the branch.
     if: ( github.event_name == 'push' ||
@@ -35,12 +32,18 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - uses: ./.github/actions/environment
-      - name: test
+      - name: packaging
         env:
-          CC: clang-11
-          CXX: clang++-11
-          CMAKE_EXTRA_PARAMS: -DENABLE_LTO=ON
-        run: ${CI_MAKE} test_ubuntu_ghactions
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_S3_ENDPOINT_URL: ${{ secrets.AWS_S3_ENDPOINT_URL }}
+          LIVE_REPO_S3_DIR: ${{ secrets.LIVE_REPO_S3_DIR }}
+          RELEASE_REPO_S3_DIR: ${{ secrets.RELEASE_REPO_S3_DIR }}
+          GPG_SECRET_KEY: ${{ secrets.GPG_SECRET_KEY }}
+          GPG_SIGN_KEY: ${{ secrets.GPG_SIGN_KEY }}
+          OS: 'el'
+          DIST: '7'
+        uses: ./.github/actions/pack_and_deploy
       - name: call action to send Telegram message on failure
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_CORE_TOKEN }}
@@ -51,6 +54,6 @@ jobs:
         uses: actions/upload-artifact@v2
         if: failure()
         with:
-          name: release_lto_clang11
+          name: centos-7
           retention-days: 21
-          path: ${{ env.VARDIR }}/artifacts
+          path: build/usr/src/*/tarantool-*/test/var/artifacts

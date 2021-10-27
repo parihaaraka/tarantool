@@ -22,7 +22,7 @@ runs:
         # not ready now.
         if ${{ github.event_name == 'push' &&
           ! endsWith(github.workflow, '_arm') &&
-          ( github.ref == 'refs/heads/master' ||
+          ( github.ref == 'refs/heads/ylobankov/test-branch' ||
             github.ref == 'refs/heads/1.10' ||
             startsWith(github.ref, 'refs/heads/2.') ||
             startsWith(github.ref, 'refs/tags') ) }} ; then
@@ -49,6 +49,7 @@ runs:
           fi
           mkdir -p ~/.gnupg
           echo 'digest-algo sha256' >> ~/.gnupg/gpg.conf
-          make -f .gitlab.mk deploy
+          #make -f .gitlab.mk deploy
+          createrepo_c --help
         fi
       shell: bash
