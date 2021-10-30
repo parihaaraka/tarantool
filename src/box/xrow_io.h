@@ -39,11 +39,23 @@ struct ibuf;
 struct xrow_header;
 
 void
-coio_read_xrow(struct ev_io *coio, struct ibuf *in, struct xrow_header *row);
+coio_read_xrow_ex(struct ev_io *coio, struct ibuf *in, struct xrow_header *row);
+
+#define coio_read_xrow(coio, in, row)					\
+	do {								\
+		coio_read_xrow_ex(coio, in, row);			\
+		(in)->rpos = (in)->xpos;				\
+	} while (0)
 
 void
-coio_read_xrow_timeout_xc(struct ev_io *coio, struct ibuf *in,
+coio_read_xrow_ex_timeout_xc(struct ev_io *coio, struct ibuf *in,
 			  struct xrow_header *row, double timeout);
+
+#define coio_read_xrow_timeout_xc(coio, in, row, timeout)		\
+	do {								\
+		coio_read_xrow_ex_timeout_xc(coio, in, row, timeout);	\
+		(in)->rpos = (in)->xpos;				\
+	} while (0)
 
 void
 coio_write_xrow(struct ev_io *coio, const struct xrow_header *row);
