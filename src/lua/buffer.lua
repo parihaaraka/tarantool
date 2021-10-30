@@ -23,6 +23,8 @@ struct ibuf
     char *buf;
     /** Start of input. */
     char *rpos;
+    /** End of parsed input. */
+    char *xpos;
     /** End of useful input */
     char *wpos;
     /** End of ibuf. */
