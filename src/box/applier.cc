@@ -524,21 +524,34 @@ applier_fetch_snapshot(struct applier *applier)
 	applier_set_state(applier, APPLIER_READY);
 }
 
-static uint64_t
-applier_read_tx(struct applier *applier, struct stailq *rows, double timeout);
+struct applier_tx {
+	/** How many rows there are in the transaction. */
+	int row_count;
+	int  start_idx;
+	/**
+	 * Transaction rows. The rows are allocated on the applier's auxiliary
+	 * buffer imediately after the tx struct. That's why we don't care about
+	 * the rows' offsets. Even when the buffer is reallocated (which happens
+	 * extremely rarely) the rows retain their positions relative to the
+	 * transaction struct.
+	 *
+	 * XXX: rewrite comment.
+	 */
+	struct xrow_header rows[];
+};
+
+/*
+ * Check that since we allocate struct applier_tx and struct xrow_header in the
+ * same continuous memory chunk.
+ */
+static_assert(alignof(struct applier_tx) == alignof(struct xrow_header),
+	      "Alignments of struct applier_tx and struct xrow_header match");
+
+static struct applier_tx *
+applier_read_tx(struct applier *applier, uint64_t *row_count,  double timeout);
 
 static int
-apply_final_join_tx(uint32_t replica_id, struct stailq *rows);
-
-/**
- * A helper struct to link xrow objects in a list.
- */
-struct applier_tx_row {
-	/* Next transaction row. */
-	struct stailq_entry next;
-	/* xrow_header struct for the current transaction row. */
-	struct xrow_header row;
-};
+apply_final_join_tx(struct applier *applier, struct applier_tx *tx);
 
 /**
  * Defragment the applier's input buffer: move its contents, if any, to the
@@ -577,29 +590,27 @@ applier_wait_register(struct applier *applier, uint64_t row_count)
 	 * Receive final data.
 	 */
 	while (true) {
-		struct stailq rows;
-		row_count += applier_read_tx(applier, &rows, TIMEOUT_INFINITY);
+		struct applier_tx *tx = applier_read_tx(applier, &row_count,
+							TIMEOUT_INFINITY);
 		while (row_count >= next_log_cnt) {
 			say_info("%.1fM rows received", next_log_cnt / 1e6);
 			next_log_cnt += ROWS_PER_LOG;
 		}
-		struct xrow_header *first_row =
-			&stailq_first_entry(&rows, struct applier_tx_row,
-					    next)->row;
-		if (first_row->type == IPROTO_OK) {
+		if (tx->rows[0].type == IPROTO_OK) {
 			/* Current vclock. This is not used now, ignore. */
-			assert(first_row ==
-			       &stailq_last_entry(&rows, struct applier_tx_row,
-						  next)->row);
+			assert(tx->row_count == 1);
 			break;
 		}
-		if (apply_final_join_tx(applier->instance_id, &rows) != 0)
+		if (apply_final_join_tx(applier, tx) != 0)
 			diag_raise();
 		/* @sa applier_subscribe(). */
 		applier->ibuf.rpos = applier->ibuf.xpos;
 		applier_ibuf_defragment(applier);
+		ibuf_reset(&applier->aux_buf);
 	}
 
+	ibuf_reset(&applier->ibuf);
+	ibuf_reset(&applier->aux_buf);
 	return row_count;
 }
 
@@ -669,19 +680,18 @@ applier_join(struct applier *applier)
 	applier_set_state(applier, APPLIER_READY);
 }
 
-static struct applier_tx_row *
+static struct xrow_header *
 applier_read_tx_row(struct applier *applier, double timeout)
 {
 	struct ev_io *coio = &applier->io;
 	struct ibuf *ibuf = &applier->ibuf;
-	size_t size;
-	struct applier_tx_row *tx_row =
-		region_alloc_object(&fiber()->gc, typeof(*tx_row), &size);
+	struct ibuf *aux_buf = &applier->aux_buf;
+	size_t size = sizeof(struct xrow_header);
+	struct xrow_header *row =
+			(struct xrow_header *)ibuf_alloc(aux_buf, size);
 
-	if (tx_row == NULL)
-		tnt_raise(OutOfMemory, size, "region_alloc_object", "tx_row");
-
-	struct xrow_header *row = &tx_row->row;
+	if (row == NULL)
+		tnt_raise(OutOfMemory, size, "ibuf_alloc", "row");
 
 	ERROR_INJECT_YIELD(ERRINJ_APPLIER_READ_TX_ROW_DELAY);
 
@@ -690,14 +700,12 @@ applier_read_tx_row(struct applier *applier, double timeout)
 	if (row->tm > 0)
 		applier->lag = ev_now(loop()) - row->tm;
 	applier->last_row_time = ev_monotonic_now(loop());
-	return tx_row;
+	return row;
 }
 
 static int64_t
-set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn)
+set_next_tx_row(struct applier_tx *tx, struct xrow_header *row, int64_t tsn)
 {
-	struct xrow_header *row = &tx_row->row;
-
 	if (iproto_type_is_error(row->type))
 		xrow_decode_error_xc(row);
 
@@ -733,7 +741,7 @@ set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn)
 		tsn = 0;
 	}
 
-	stailq_add_tail(rows, &tx_row->next);
+	tx->row_count++;
 	return tsn;
 }
 
@@ -753,38 +761,50 @@ set_next_tx_row(struct stailq *rows, struct applier_tx_row *tx_row, int64_t tsn)
  * transaction. Moreover, each next reallocation is exponentially less likely
  * to happen, because the buffer size is doubled every time.
  */
-static uint64_t
-applier_read_tx(struct applier *applier, struct stailq *rows, double timeout)
+static struct applier_tx *
+applier_read_tx(struct applier *applier, uint64_t *cnt, double timeout)
 {
 	int64_t tsn = 0;
+	struct applier_tx *tx =
+		(struct applier_tx *)ibuf_alloc(&applier->aux_buf, sizeof(*tx));
+	if (tx == NULL) {
+		tnt_raise(OutOfMemory, sizeof(*tx), "ibuf_alloc",
+			   "applier_tx");
+	}
+	memset(tx, 0, sizeof(*tx));
 	uint64_t row_count = 0;
-
-	stailq_create(rows);
 	do {
 		const char *old_rpos = applier->ibuf.rpos;
-		struct applier_tx_row *tx_row = applier_read_tx_row(applier,
-								    timeout);
+		struct xrow_header *row = applier_read_tx_row(applier, timeout);
+		/*
+		 * Detect aux buf relocation and adjust tx pointer
+		 * accordingly.
+		 */
+		if (unlikely(&tx->rows[row_count] != row)) {
+			tx = container_of(row - row_count, struct applier_tx,
+					  rows[0]);
+		}
 		/* Detect ibuf reallocation or defragmentation. */
 		ssize_t delta = applier->ibuf.rpos - old_rpos;
 		if (unlikely(delta != 0)) {
-			struct applier_tx_row *item;
-			stailq_foreach_entry(item, rows, next) {
-				struct xrow_header *row = &item->row;
-				if (row->bodycnt == 0)
+			for (int i = 0; i < tx->row_count; i++) {
+				struct xrow_header *cur = &tx->rows[i];
+				if (cur->bodycnt == 0)
 					continue;
 				/*
 				 * The row body's offset relative to ibuf->rpos
 				 * is constant, so they all were moved by the
 				 * same delta as rpos.
 				 */
-				row->body->iov_base =
-					(char *)row->body->iov_base + delta;
+				cur->body->iov_base =
+					(char *)cur->body->iov_base + delta;
 			}
 		}
-		tsn = set_next_tx_row(rows, tx_row, tsn);
+		tsn = set_next_tx_row(tx, row, tsn);
 		++row_count;
 	} while (tsn != 0);
-	return row_count;
+	*cnt += tx->row_count;
+	return tx;
 }
 
 static void
@@ -975,7 +995,7 @@ applier_handle_raft(struct applier *applier, struct xrow_header *row)
 }
 
 static int
-apply_plain_tx(uint32_t replica_id, struct stailq *rows,
+apply_plain_tx(struct applier *applier, struct applier_tx *tx,
 	       bool skip_conflict, bool use_triggers)
 {
 	/*
@@ -985,12 +1005,11 @@ apply_plain_tx(uint32_t replica_id, struct stailq *rows,
 	 * IPROTO_NOP on gc.
 	 */
 	struct txn *txn = txn_begin();
-	struct applier_tx_row *item;
 	if (txn == NULL)
 		 return -1;
 
-	stailq_foreach_entry(item, rows, next) {
-		struct xrow_header *row = &item->row;
+	for (int i = tx->start_idx; i < tx->row_count; i++) {
+		struct xrow_header *row = &tx->rows[i];
 		int res = apply_row(row);
 		if (res != 0 && skip_conflict) {
 			struct error *e = diag_last_error(diag_get());
@@ -1061,9 +1080,8 @@ apply_plain_tx(uint32_t replica_id, struct stailq *rows,
 		 * transaction traversed network + remote WAL bundle before
 		 * ack get received.
 		 */
-		item = stailq_last_entry(rows, struct applier_tx_row, next);
-		rcb->replica_id = replica_id;
-		rcb->txn_last_tm = item->row.tm;
+		rcb->replica_id = applier->instance_id;
+		rcb->txn_last_tm = tx->rows[tx->row_count - 1].tm;
 
 		trigger_create(on_wal_write, applier_txn_wal_write_cb, rcb, NULL);
 		txn_on_wal_write(txn, on_wal_write);
@@ -1077,20 +1095,16 @@ fail:
 
 /** A simpler version of applier_apply_tx() for final join stage. */
 static int
-apply_final_join_tx(uint32_t replica_id, struct stailq *rows)
+apply_final_join_tx(struct applier *applier, struct applier_tx *tx)
 {
-	struct xrow_header *first_row =
-		&stailq_first_entry(rows, struct applier_tx_row, next)->row;
-	struct xrow_header *last_row =
-		&stailq_last_entry(rows, struct applier_tx_row, next)->row;
 	int rc = 0;
 	/* WAL isn't enabled yet, so follow vclock manually. */
-	vclock_follow_xrow(&replicaset.vclock, last_row);
-	if (unlikely(iproto_type_is_synchro_request(first_row->type))) {
-		assert(first_row == last_row);
-		rc = apply_synchro_row(replica_id, first_row);
+	vclock_follow_xrow(&replicaset.vclock, &tx->rows[tx->row_count - 1]);
+	if (unlikely(iproto_type_is_synchro_request(tx->rows[0].type))) {
+		assert(tx->row_count == 1);
+		rc = apply_synchro_row(applier->instance_id, &tx->rows[0]);
 	} else {
-		rc = apply_plain_tx(replica_id, rows, false, false);
+		rc = apply_plain_tx(applier, tx, false, false);
 	}
 	fiber_gc();
 	return rc;
@@ -1104,7 +1118,7 @@ apply_final_join_tx(uint32_t replica_id, struct stailq *rows)
  * The rows are replaced with NOPs to preserve the vclock consistency.
  */
 static void
-applier_synchro_filter_tx(struct stailq *rows)
+applier_synchro_filter_tx(struct applier_tx *tx)
 {
 	/*
 	 * XXX: in case raft is disabled, synchronous replication still works
@@ -1114,16 +1128,16 @@ applier_synchro_filter_tx(struct stailq *rows)
 	 */
 	if (!raft_is_enabled(box_raft()))
 		return;
-	struct xrow_header *row;
+	struct xrow_header *first_row = &tx->rows[tx->start_idx];
+	struct xrow_header *last_row = &tx->rows[tx->row_count - 1];
 	/*
 	 * It  may happen that we receive the instance's rows via some third
 	 * node, so cannot check for applier->instance_id here.
 	 */
-	row = &stailq_first_entry(rows, struct applier_tx_row, next)->row;
-	if (!txn_limbo_is_replica_outdated(&txn_limbo, row->replica_id))
+	if (!txn_limbo_is_replica_outdated(&txn_limbo, first_row->replica_id))
 		return;
 
-	if (stailq_last_entry(rows, struct applier_tx_row, next)->row.wait_sync)
+	if (last_row->wait_sync)
 		goto nopify;
 
 	/*
@@ -1131,24 +1145,22 @@ applier_synchro_filter_tx(struct stailq *rows)
 	 * NOP or an asynchronous transaction not depending on any synchronous
 	 * ones - let it go as is.
 	 */
-	if (!iproto_type_is_synchro_request(row->type))
+	if (!iproto_type_is_synchro_request(first_row->type))
 		return;
 	/*
 	 * Do not NOPify promotion, otherwise won't even know who is the limbo
 	 * owner now.
 	 */
-	if (iproto_type_is_promote_request(row->type))
+	if (iproto_type_is_promote_request(first_row->type))
 		return;
 nopify:;
-	struct applier_tx_row *item;
-	stailq_foreach_entry(item, rows, next) {
-		row = &item->row;
-		row->type = IPROTO_NOP;
+	for (int i = tx->start_idx; i < tx->row_count; i++) {
+		tx->rows[i].type = IPROTO_NOP;
 		/*
 		 * Row body will be discarded together with the remaining
 		 * input.
 		 */
-		row->bodycnt = 0;
+		tx->rows[i].bodycnt = 0;
 	}
 }
 
@@ -1158,8 +1170,9 @@ nopify:;
  * Return 0 for success or -1 in case of an error.
  */
 static int
-applier_apply_tx(struct applier *applier, struct stailq *rows)
+applier_apply_tx(struct applier *applier, struct applier_tx *tx)
 {
+	assert(tx->row_count > 0);
 	/*
 	 * Initially we've been filtering out data if it came from
 	 * an applier which instance_id doesn't match raft->leader,
@@ -1176,10 +1189,8 @@ applier_apply_tx(struct applier *applier, struct stailq *rows)
 	 * Finally we dropped such "sender" filtration and use transaction
 	 * "initiator" filtration via xrow->replica_id only.
 	 */
-	struct xrow_header *first_row = &stailq_first_entry(rows,
-					struct applier_tx_row, next)->row;
-	struct xrow_header *last_row;
-	last_row = &stailq_last_entry(rows, struct applier_tx_row, next)->row;
+	struct xrow_header *first_row = &tx->rows[tx->start_idx];
+	struct xrow_header *last_row = &tx->rows[tx->row_count - 1];
 	struct replica *replica = replica_by_id(first_row->replica_id);
 	int rc = 0;
 	/*
@@ -1201,31 +1212,27 @@ applier_apply_tx(struct applier *applier, struct stailq *rows)
 		 * instance not knowing of tx boundaries.
 		 * Skip the already applied part.
 		 */
-		struct xrow_header *tmp;
-		while (true) {
-			tmp = &stailq_first_entry(rows,
-						  struct applier_tx_row,
-						  next)->row;
-			if (tmp->lsn <= vclock_get(&replicaset.applier.vclock,
-						   tmp->replica_id)) {
-				stailq_shift(rows);
-			} else {
+		for (int i = tx->start_idx; i < tx->row_count; i++) {
+			struct xrow_header *row = &tx->rows[i];
+			if (row->lsn > vclock_get(&replicaset.applier.vclock,
+						   row->replica_id)) {
+				tx->start_idx = i;
 				break;
 			}
 		}
 	}
-	applier_synchro_filter_tx(rows);
+	applier_synchro_filter_tx(tx);
 	if (unlikely(iproto_type_is_synchro_request(first_row->type))) {
 		/*
 		 * Synchro messages are not transactions, in terms
 		 * of DML. Always sent and written isolated from
 		 * each other.
 		 */
-		assert(first_row == last_row);
+		assert(tx->row_count == 1);
 		rc = apply_synchro_row(applier->instance_id, first_row);
 	} else {
-		rc = apply_plain_tx(applier->instance_id, rows,
-				    replication_skip_conflict, true);
+		rc = apply_plain_tx(applier, tx, replication_skip_conflict,
+				    true);
 	}
 	if (rc != 0)
 		goto finish;
@@ -1423,6 +1430,7 @@ applier_subscribe(struct applier *applier)
 			applier_set_state(applier, APPLIER_FOLLOW);
 		}
 
+		uint64_t cnt;
 		/*
 		 * Tarantool < 1.7.7 does not send periodic heartbeat
 		 * messages so we can't assume that if we haven't heard
@@ -1433,16 +1441,13 @@ applier_subscribe(struct applier *applier)
 				 TIMEOUT_INFINITY :
 				 replication_disconnect_timeout();
 
-		struct stailq rows;
-		applier_read_tx(applier, &rows, timeout);
+		struct applier_tx *tx = applier_read_tx(applier, &cnt, timeout);
 
 		/*
 		 * In case of an heartbeat message wake a writer up
 		 * and check applier state.
 		 */
-		struct xrow_header *first_row =
-			&stailq_first_entry(&rows, struct applier_tx_row,
-					    next)->row;
+		struct xrow_header *first_row = &tx->rows[0];
 		raft_process_heartbeat(box_raft(), applier->instance_id);
 		if (first_row->lsn == 0) {
 			if (unlikely(iproto_type_is_raft_request(
@@ -1452,7 +1457,7 @@ applier_subscribe(struct applier *applier)
 					diag_raise();
 			}
 			applier_signal_ack(applier);
-		} else if (applier_apply_tx(applier, &rows) != 0) {
+		} else if (applier_apply_tx(applier, tx) != 0) {
 			diag_raise();
 		}
 
@@ -1465,6 +1470,7 @@ applier_subscribe(struct applier *applier)
 		 * chunk.
 		 */
 		applier_ibuf_defragment(applier);
+		ibuf_reset(&applier->aux_buf);
 	}
 }
 
@@ -1481,6 +1487,7 @@ applier_disconnect(struct applier *applier, enum applier_state state)
 	coio_close_io(loop(), &applier->io);
 	/* Clear all unparsed input. */
 	ibuf_reinit(&applier->ibuf);
+	ibuf_reinit(&applier->aux_buf);
 	fiber_gc();
 }
 
@@ -1698,6 +1705,7 @@ applier_new(const char *uri)
 	}
 	coio_create(&applier->io, -1);
 	ibuf_create(&applier->ibuf, &cord()->slabc, 1024);
+	ibuf_create(&applier->aux_buf, &cord()->slabc, 1024);
 
 	/* uri_parse() sets pointers to applier->source buffer */
 	snprintf(applier->source, sizeof(applier->source), "%s", uri);

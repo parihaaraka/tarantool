@@ -118,6 +118,11 @@ struct applier {
 	struct ev_io io;
 	/** Input buffer */
 	struct ibuf ibuf;
+	/**
+	 * A buffer used not as input storage but rather a place to allocate
+	 * auxiliary structures.
+	 */
+	struct ibuf aux_buf;
 	/** Triggers invoked on state change */
 	struct rlist on_state;
 	/**
