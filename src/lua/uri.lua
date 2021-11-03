@@ -4,6 +4,19 @@ local ffi = require('ffi')
 local buffer = require('buffer')
 
 ffi.cdef[[
+struct uri_query_param {
+    const char *name;
+    int value_count;
+    const char **values;
+};
+
+/**
+ * We define all strings inside the `struct uri` as const, despite
+ * the fact that they are not constant in the C structure. This is
+ * necessary for the `uri_format` function work: there we cannot
+ * assign lua strings to a non-constant pointer. It's not a problem
+ * since uri_format doesn't change something in `struct uri`.
+ */
 struct uri {
     const char *scheme;
     const char *login;
@@ -14,6 +27,8 @@ struct uri {
     const char *query;
     const char *fragment;
     int host_hint;
+    int param_count;
+    struct uri_query_param *params;
 };
 
 int
@@ -47,6 +62,15 @@ local function parse(str)
         'path', 'query', 'fragment'}) do
         if uribuf[k] ~= nil then
             result[k] = ffi.string(uribuf[k])
+        end
+    end
+    result.params = {}
+    for param_idx = 0, uribuf.param_count - 1 do
+        local name = ffi.string(uribuf.params[param_idx].name)
+        result.params[name] = {}
+        for val_idx = 0, uribuf.params[param_idx].value_count - 1 do
+            result.params[name][val_idx + 1] =
+                ffi.string(uribuf.params[param_idx].values[val_idx])
         end
     end
     if uribuf.host_hint == 1 then
