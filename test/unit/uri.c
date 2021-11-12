@@ -233,15 +233,15 @@ main(void)
 	     NULL, 0);
 
 	test("/tmp/unix.sock?q1=v1&q2=v2#fragment", NULL, NULL, NULL, "unix/",
-		"/tmp/unix.sock", NULL, "q1=v1&q2=v2", "fragment", 3);
+	     "/tmp/unix.sock", NULL, "q1=v1&q2=v2", "fragment", 3);
 
-	test("/tmp/unix.sock:/path1/path2/path3?q1=v1&q2=v2#fragment", NULL, NULL,
-		NULL, "unix/", "/tmp/unix.sock", "/path1/path2/path3", "q1=v1&q2=v2",
-		"fragment", 3);
+	test("/tmp/unix.sock:/path1/path2/path3?q1=v1&q2=v2#fragment", NULL,
+	     NULL, NULL, "unix/", "/tmp/unix.sock", "/path1/path2/path3",
+	     "q1=v1&q2=v2", "fragment", 3);
 
 	test("login:password@/tmp/unix.sock:/path1/path2/path3?q1=v1#fragment",
-		NULL, "login", "password", "unix/", "/tmp/unix.sock",
-		"/path1/path2/path3", "q1=v1", "fragment", 3);
+	     NULL, "login", "password", "unix/", "/tmp/unix.sock",
+	     "/path1/path2/path3", "q1=v1", "fragment", 3);
 
 	test("scheme://login:password@/tmp/unix.sock:/path1/path2/path3",
 	     "scheme", "login", "password", "unix/", "/tmp/unix.sock",
