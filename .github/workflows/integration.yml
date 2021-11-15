@@ -73,7 +73,7 @@ jobs:
 
   tarantool-python:
     needs: tarantool
-    uses: tarantool/tarantool-python/.github/workflows/reusable_testing.yml@master
+    uses: tarantool/tarantool-python/.github/workflows/reusable_testing.yml@ylobankov/skip-or-run-sql-tests-verification
     with:
       artifact_name: tarantool-ubuntu-focal-${{ github.sha }}
 
