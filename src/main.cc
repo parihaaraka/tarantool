@@ -179,6 +179,31 @@ signal_cb(ev_loop *loop, struct ev_signal *w, int revents)
 }
 
 static void
+signal_sigint_cb(ev_loop *loop, struct ev_signal *w, int revents)
+{
+	(void) loop;
+	(void) w;
+	(void) revents;
+
+	/**
+	 * If running in daemon mode, tarantool exits on SIGINT
+	 */
+	if (pid_file)
+		tarantool_exit(0);
+
+	/**
+ 	 * Setting prompt explicitly every time, cause of
+ 	 * return from search mode
+ 	 */
+	rl_set_prompt("tarantool>");
+	write(STDOUT_FILENO, "\n", sizeof("\n")-1);
+	RL_UNSETSTATE(RL_STATE_ISEARCH | RL_STATE_NSEARCH | RL_STATE_SEARCH);
+	rl_on_new_line();
+	rl_replace_line("", 0);
+	rl_redisplay();
+}
+
+static void
 signal_sigwinch_cb(ev_loop *loop, struct ev_signal *w, int revents)
 {
 	(void) loop;
@@ -251,7 +276,7 @@ signal_init(void)
 	crash_signal_init();
 
 	ev_signal_init(&ev_sigs[0], sig_checkpoint, SIGUSR1);
-	ev_signal_init(&ev_sigs[1], signal_cb, SIGINT);
+	ev_signal_init(&ev_sigs[1], signal_sigint_cb, SIGINT);
 	ev_signal_init(&ev_sigs[2], signal_cb, SIGTERM);
 	ev_signal_init(&ev_sigs[3], signal_sigwinch_cb, SIGWINCH);
 	ev_signal_init(&ev_sigs[4], say_logrotate, SIGHUP);
