@@ -57,6 +57,7 @@
 #include "sequence.h"
 #include "sql.h"
 #include "constraint_id.h"
+#include "tuple_constraint.h"
 
 /* {{{ Auxiliary functions and methods. */
 

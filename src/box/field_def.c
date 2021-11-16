@@ -35,6 +35,8 @@
 #include "mp_extension_types.h"
 #include "mp_uuid.h"
 #include "tt_uuid.h"
+#include "tuple_constraint.h"
+#include "small/region.h"
 
 const char *mp_type_strs[] = {
 	/* .MP_NIL    = */ "nil",
@@ -151,6 +153,14 @@ field_type1_contains_type2(enum field_type type1, enum field_type type2)
 	return field_type_compatibility[idx];
 }
 
+/**
+ * Callback to parse a value with 'constraint' key in msgpack field definition.
+ * See function definition below.
+ */
+static int
+field_def_parse_constraint(const char **data, void *opts, struct region *region,
+			   uint32_t errcode, uint32_t field_no);
+
 const struct opt_def field_def_reg[] = {
 	OPT_DEF_ENUM("type", field_type, struct field_def, type,
 		     field_type_by_name_wrapper),
@@ -160,6 +170,7 @@ const struct opt_def field_def_reg[] = {
 		     nullable_action, NULL),
 	OPT_DEF("collation", OPT_UINT32, struct field_def, coll_id),
 	OPT_DEF("default", OPT_STRPTR, struct field_def, default_value),
+	OPT_DEF_CUSTOM("constraint", field_def_parse_constraint),
 	OPT_END,
 };
 
@@ -170,7 +181,9 @@ const struct field_def field_def_default = {
 	.nullable_action = ON_CONFLICT_ACTION_DEFAULT,
 	.coll_id = COLL_NONE,
 	.default_value = NULL,
-	.default_value_expr = NULL
+	.default_value_expr = NULL,
+	.constraint_count = 0,
+	.constraint_def = NULL,
 };
 
 enum field_type
@@ -188,4 +201,69 @@ field_type_by_name(const char *name, size_t len)
 	else if (len == 1 && name[0] == '*')
 		return FIELD_TYPE_ANY;
 	return field_type_MAX;
+}
+
+/**
+ * Parse constraint array from msgpack.
+ * Used as callback to parse a value with 'constraint' key in field definition.
+ * Move @a data msgpack pointer to the end of msgpack value.
+ * By convention @a opts must point to corresponding struct field_def.
+ * Allocate a temporary constraint array on @a region and set pointer to it
+ *  as field_def->constraint, also setting field_def->constraint_count.
+ * Return 0 on success or -1 on error (diag is set to @a errcode with
+ *  reference to field by @a field_no).
+ */
+static int
+field_def_parse_constraint(const char **data, void *opts, struct region *region,
+			   uint32_t errcode, uint32_t field_no)
+{
+	/* Expected normal form of constraints: {name1=func1, name2=func2..}. */
+	struct field_def *def = (struct field_def *)opts;
+	if (mp_typeof(**data) != MP_MAP) {
+		diag_set(ClientError, errcode, field_no,
+			 "constraint field is expected to be a MAP");
+		return -1;
+	}
+	def->constraint_count = mp_decode_map(data);
+	if (def->constraint_count == 0)
+		return 0;
+
+	size_t bytes;
+	def->constraint_def = region_alloc_array(region,
+						 struct tuple_constraint_def,
+						 def->constraint_count, &bytes);
+	if (def->constraint_def == NULL) {
+		diag_set(OutOfMemory, bytes, "region_alloc_array",
+			 "constraints");
+		return -1;
+	}
+
+	for (size_t i = 0; i < def->constraint_count * 2; i++) {
+		if (mp_typeof(**data) != MP_STR) {
+			diag_set(ClientError, errcode, field_no,
+				 i % 2 == 0 ?
+				 "constraint name is expected to be a string" :
+				 "constraint func is expected to be a string");
+			return -1;
+		}
+		uint32_t str_len;
+		const char *str = mp_decode_str(data, &str_len);
+		char *str_copy = region_alloc(region, str_len + 1);
+		if (str_copy == NULL) {
+			diag_set(OutOfMemory, str_len + 1, "region",
+				 i % 2 == 0 ? "constraint name"
+					    : "constraint func");
+			return -1;
+		}
+		memcpy(str_copy, str, str_len);
+		str_copy[str_len] = 0;
+		if (i % 2 == 0) {
+			def->constraint_def[i / 2].name = str_copy;
+			def->constraint_def[i / 2].name_len = str_len;
+		} else {
+			def->constraint_def[i / 2].func_name = str_copy;
+			def->constraint_def[i / 2].func_name_len = str_len;
+		}
+	}
+	return 0;
 }
