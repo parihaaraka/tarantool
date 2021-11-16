@@ -92,17 +92,57 @@ local function test_parse(test)
 end
 
 local function test_format(test)
-    test:plan(3)
+    test:plan(10)
     local u = uri.parse("user:password@localhost")
     test:is(uri.format(u), "user@localhost", "password removed")
     test:is(uri.format(u, false), "user@localhost", "password removed")
     test:is(uri.format(u, true), "user:password@localhost", "password kept")
+
+    -- All query parameters passed in "params" table.
+    u = uri.parse({"/tmp/unix.sock", params = {q1 = "v1", q2 = "v2"}})
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1=v1&q2=v2", "URI format")
+
+    -- Empty query parameter in URI string.
+    u = uri.parse({"/tmp/unix.sock?q1", params = {q2 = "v2", q3 = "v3"}})
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1&q2=v2&q3=v3", "URI format")
+
+    -- Query parameter without value in URI string.
+    u = uri.parse({"/tmp/unix.sock?q1=", params = {q2 = "v2", q3 = "v3"}})
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1=&q2=v2&q3=v3", "URI format")
+
+    -- Some query parameters passed in URI string and some different
+    -- query parameters passed in "params" table.
+    u = uri.parse({"/tmp/unix.sock?q1=v1", params = {q2 = "v2"}})
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1=v1&q2=v2", "URI format")
+
+    -- Same as previous but each parameter has several values.
+    u = uri.parse({
+        "/tmp/unix.sock?q1=v11&q1=v12",
+        params = {q2 = {"v21", "v22"}}
+    })
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1=v11&q1=v12&q2=v21&q2=v22",
+            "URI format")
+
+    -- One of parameters in "param" table has empty value
+    u = uri.parse({
+        "/tmp/unix.sock?q1=v11&q1=v12",
+        params = {q2 = {""}}
+    })
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1=v11&q1=v12&q2=", "URI format")
+
+    -- Query parameter from "params" table overwrite query
+    -- parameter from URI string.
+    u = uri.parse({
+        "/tmp/unix.sock?q1=v11&q1=v12",
+        params = {q1 = {"v13", "v14"}, q2 = "v2"}
+    })
+    test:is(uri.format(u), "unix/:/tmp/unix.sock?q1=v13&q1=v14&q2=v2", "URI format")
 end
 
 local function test_parse_uri_query_params(test)
     -- Tests for uri.parse() Lua bindings (URI with query parameters).
     -- Parser itself is tested by test/unit/uri unit test.
-    test:plan(33)
+    test:plan(53)
 
     local u
 
@@ -146,6 +186,45 @@ local function test_parse_uri_query_params(test)
     test:is(u.params["q1"][2], "", "param value")
     test:is(type(u.params["q2"]), "table", "name")
     test:is(#u.params["q2"], 0, "value count")
+
+    -- Parse URI passed in table format, parameter values
+    -- from "params" table, overwrite values from string.
+    u = uri.parse({
+        "/tmp/unix.sock?q1=v11",
+        params = { q1 = "v12", q2 = "v21" }
+    })
+    test:is(u.host, 'unix/', 'host')
+    test:is(u.service, '/tmp/unix.sock', 'service')
+    test:is(u.unix, '/tmp/unix.sock', 'unix')
+    test:is(type(u.params["q1"]), "table", "name")
+    test:is(#u.params["q1"], 1, "value count")
+    test:is(u.params["q1"][1], "v12", "param value")
+    test:is(type(u.params["q2"]), "table", "name")
+    test:is(#u.params["q2"], 1, "value count")
+    test:is(u.params["q2"][1], "v21", "param value")
+
+    -- Same as previous but "uri=" syntax
+    u = uri.parse({
+        uri = "/tmp/unix.sock?q1=v11",
+        params = { q1 = "v12", q2 = "v21" }
+    })
+    test:is(u.host, 'unix/', 'host')
+    test:is(u.service, '/tmp/unix.sock', 'service')
+    test:is(u.unix, '/tmp/unix.sock', 'unix')
+    test:is(type(u.params["q1"]), "table", "name")
+    test:is(#u.params["q1"], 1, "value count")
+    test:is(u.params["q1"][1], "v12", "param value")
+    test:is(type(u.params["q2"]), "table", "name")
+    test:is(#u.params["q2"], 1, "value count")
+    test:is(u.params["q2"][1], "v21", "param value")
+
+    -- "defult_params" is not allowed for single URI.
+    u = uri.parse({ "/tmp/unix.sock", default_params = {q = "v"} })
+    test:isnil(u, "invalid uri", u)
+    -- Multiple URIs is not allowed in `parse` method,
+    -- use `parse_many` instead.
+    u = uri.parse({ "/tmp/unix.sock, /tmp/unix.sock"})
+    test:isnil(u, "invalid uri", u)
 end
 
 local function test_parse_uri_set_with_query_params(test)
@@ -219,10 +298,366 @@ local function test_parse_uri_set_with_query_params(test)
     test:isnil(u, "invalid uri", u)
 end
 
+local function test_parse_uri_set_from_lua_table(test)
+    -- Tests for uri.parse_many() Lua bindings.
+    -- (Several URIs with query parameters, passed in different ways).
+    test:plan(134)
+
+    local uri_set
+
+    -- Array with one string address and one query parameter
+    uri_set = uri.parse_many({"/tmp/unix.sock?q1=v1"})
+    test:is(#uri_set, 1, "uri count")
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q1"]), "table", "name")
+    test:is(#uri_set[1].params["q1"], 1, "value count")
+    test:is(uri_set[1].params["q1"][1], "v1", "param value")
+
+    -- Array with one string address and several query parameters.
+    -- One of them passed in URI string, one separately as a string,
+    -- one separately as a table with two values.
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock?q1=v1",
+        params = {q2 = "v2", q3 = {"v31", "v32"}}
+    })
+    test:is(#uri_set, 1, "uri count")
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q1"]), "table", "name")
+    test:is(#uri_set[1].params["q1"], 1, "value count")
+    test:is(uri_set[1].params["q1"][1], "v1", "param value")
+    test:is(type(uri_set[1].params["q2"]), "table", "name")
+    test:is(#uri_set[1].params["q2"], 1, "value count")
+    test:is(uri_set[1].params["q2"][1], "v2", "param value")
+    test:is(type(uri_set[1].params["q3"]), "table", "name")
+    test:is(#uri_set[1].params["q3"], 2, "value count")
+    test:is(uri_set[1].params["q3"][1], "v31", "param value")
+    test:is(uri_set[1].params["q3"][2], "v32", "param value")
+
+    -- Same as previous but use "uri=" syntax to save URI value.
+    uri_set = uri.parse_many({
+        uri = "/tmp/unix.sock?q1=v1",
+        params = {q2 = "v2", q3 = {"v31", "v32"}}
+    })
+    test:is(#uri_set, 1, "uri count")
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q1"]), "table", "name")
+    test:is(#uri_set[1].params["q1"], 1, "value count")
+    test:is(uri_set[1].params["q1"][1], "v1", "param value")
+    test:is(type(uri_set[1].params["q2"]), "table", "name")
+    test:is(#uri_set[1].params["q2"], 1, "value count")
+    test:is(uri_set[1].params["q2"][1], "v2", "param value")
+    test:is(type(uri_set[1].params["q3"]), "table", "name")
+    test:is(#uri_set[1].params["q3"], 2, "value count")
+    test:is(uri_set[1].params["q3"][1], "v31", "param value")
+    test:is(uri_set[1].params["q3"][2], "v32", "param value")
+
+    -- Check that URI query parameter value from "params" table
+    -- overwrite parameter value from the string.
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock?q1=v1",
+        params = {q1 = {"v2", "v3"}}
+    })
+    test:is(#uri_set, 1, "uri count")
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q1"]), "table", "name")
+    test:is(#uri_set[1].params["q1"], 2, "value count")
+    -- "v1" value was overwriten by values from "params" table
+    test:is(uri_set[1].params["q1"][1], "v2", "param value")
+    test:is(uri_set[1].params["q1"][2], "v3", "param value")
+
+    -- Most common way: several URIs passed as array of strings
+    -- and objects with different query parameters and default
+    -- query parameters.
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock?q1=v11",
+        {  "/tmp/unix.sock?q2=v21", params = { q2 = "v22", q3 = "v31" } },
+        { "/tmp/unix.sock", params = { q1 = 1, q2 = { 2, 3, 4}, q3 = 5 } },
+        { uri = "/tmp/unix.sock?q2&q3=v31", params = { q3 = {"v33", "v34"} } },
+        default_params = {
+            q1 = {"v12", "v13"}, q2 = {"v21", "v22"}, q3 = {"v32"}, q4 = 6
+        }
+    })
+    test:is(#uri_set, 4, "uri count")
+    -- First URI from uri_set
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q1"]), "table", "name")
+    test:is(#uri_set[1].params["q1"], 1, "value count")
+    -- As previously values from "default_params" table are
+    -- ignored if there is some values for this URI query
+    -- parameter from URI string or "params" table.
+    test:is(uri_set[1].params["q1"][1], "v11", "param value")
+    test:is(type(uri_set[1].params["q2"]), "table", "name")
+    test:is(#uri_set[1].params["q2"], 2, "value count")
+    -- Values was added from "default_params" table.
+    test:is(uri_set[1].params["q2"][1], "v21", "param value")
+    test:is(uri_set[1].params["q2"][2], "v22", "param value")
+    test:is(type(uri_set[1].params["q3"]), "table", "name")
+    test:is(#uri_set[1].params["q3"], 1, "value count")
+    -- Value was added from "params" table.
+    test:is(uri_set[1].params["q3"][1], "v32", "param value")
+    test:is(type(uri_set[1].params["q4"]), "table", "name")
+    test:is(#uri_set[1].params["q4"], 1, "value count")
+    -- Numerical value, saved as a string.
+    test:is(uri_set[1].params["q4"][1], "6", "param value")
+    -- Second URI from uri_set
+    test:is(uri_set[2].host, 'unix/', 'host')
+    test:is(uri_set[2].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[2].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[2].params["q1"]), "table", "name")
+    test:is(#uri_set[2].params["q1"], 2, "value count")
+    -- Values from "default_params" table for "q1" parameter
+    -- are added, because there is no such parameter in URI
+    -- string and in "params" table.
+    test:is(uri_set[2].params["q1"][1], "v12", "param value")
+    test:is(uri_set[2].params["q1"][1], "v12", "param value")
+    test:is(type(uri_set[2].params["q2"]), "table", "name")
+    test:is(#uri_set[2].params["q2"], 1, "value count")
+    -- "q2" parameter value from URI string overwritten by
+    -- value from "params" table, values from "defaul_params"
+    -- table are ignored.
+    test:is(uri_set[2].params["q2"][1], "v22", "param value")
+    test:is(type(uri_set[2].params["q3"]), "table", "name")
+    test:is(#uri_set[2].params["q3"], 1, "value count")
+    -- "q3" parameter value added from from "params" table,
+    -- values from "defaul_params" table are ignored.
+    test:is(uri_set[2].params["q3"][1], "v31", "param value")
+    test:is(type(uri_set[2].params["q4"]), "table", "name")
+    test:is(#uri_set[2].params["q4"], 1, "value count")
+    -- Numerical value, saved as a string.
+    test:is(uri_set[2].params["q4"][1], "6", "param value")
+    -- Third URI from uri_set
+    -- All values are taken from "params" table, just check
+    -- how we parse numerical parameter values.
+    test:is(uri_set[3].host, 'unix/', 'host')
+    test:is(uri_set[3].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[3].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[3].params["q1"]), "table", "name")
+    test:is(#uri_set[3].params["q1"], 1, "value count")
+    test:is(uri_set[3].params["q1"][1], "1", "param value")
+    test:is(type(uri_set[3].params["q2"]), "table", "name")
+    test:is(#uri_set[3].params["q2"], 3, "value count")
+    test:is(uri_set[3].params["q2"][1], "2", "param value")
+    test:is(uri_set[3].params["q2"][2], "3", "param value")
+    test:is(uri_set[3].params["q2"][3], "4", "param value")
+    test:is(type(uri_set[3].params["q3"]), "table", "name")
+    test:is(#uri_set[3].params["q3"], 1, "value count")
+    test:is(uri_set[3].params["q3"][1], "5", "param value")
+    -- Fourth URI from uri_set
+    test:is(uri_set[4].host, 'unix/', 'host')
+    test:is(uri_set[4].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[4].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[4].params["q1"]), "table", "name")
+    test:is(#uri_set[4].params["q1"], 2, "value count")
+    -- As previous values was added from "default_params" table
+    test:is(uri_set[4].params["q1"][1], "v12", "param value")
+    test:is(uri_set[4].params["q1"][2], "v13", "param value")
+    test:is(type(uri_set[4].params["q2"]), "table", "name")
+    test:is(#uri_set[4].params["q2"], 2, "value count")
+    -- Values from "default_params" table for "q2" parameter
+    -- are added, because there is no values for this parameter
+    -- in URI string and there is no such paramater in "params
+    -- table.
+    test:is(uri_set[4].params["q2"][1], "v21", "param value")
+    test:is(uri_set[4].params["q2"][2], "v22", "param value")
+    test:is(type(uri_set[4].params["q3"]), "table", "name")
+    test:is(#uri_set[4].params["q3"], 2, "value count")
+    -- Value from URI string was overwritten by values from
+    -- "params" table. Values from "default_params" table are
+    -- ignored.
+    test:is(uri_set[4].params["q3"][1], "v33", "param value")
+    test:is(uri_set[4].params["q3"][2], "v34", "param value")
+    test:is(type(uri_set[4].params["q4"]), "table", "name")
+    test:is(#uri_set[4].params["q4"], 1, "value count")
+    -- Numerical value, saved as a string.
+    test:is(uri_set[4].params["q4"][1], "6", "param value")
+
+    -- If some URI query parameter is a table in
+    -- "params" or "default_params" table, all keys
+    -- in this table should be numerical, otherwise
+    -- silently ignored
+    uri_set = uri.parse_many({
+        { "/tmp/unix.sock", params = {q1 = { x = "y"}} },
+        "/tmp/unix.sock",
+        default_params = {q2 = {x = "y"}}
+    })
+    test:is(#uri_set, 2, "uri count")
+    -- First URI from uri_set
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q1"]), "nil", "name")
+    test:is(type(uri_set[1].params["q2"]), "nil", "name")
+    test:is(uri_set[2].host, 'unix/', 'host')
+    test:is(uri_set[2].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[2].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[2].params["q1"]), "nil", "name")
+    test:is(type(uri_set[2].params["q2"]), "nil", "name")
+
+    -- URI table without URI
+    uri_set = uri.parse_many({
+        params = {q = "v"},
+        default_params = {}
+    })
+    test:is(#uri_set, 0, "uri count")
+
+    -- URI table with one URI in table format
+    uri_set = uri.parse_many{{"/tmp/unix.sock"}, default_params = {q = "v"}}
+    test:is(#uri_set, 1, "uri count")
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q"]), "table", "name")
+    test:is(#uri_set[1].params["q"], 1, "value count")
+    test:is(uri_set[1].params["q"][1], "v", "param value")
+
+    -- Same as previous but with "uri=" syntax
+    uri_set = uri.parse_many{{uri = "/tmp/unix.sock"}, default_params = {q = "v"}}
+    test:is(#uri_set, 1, "uri count")
+    test:is(uri_set[1].host, 'unix/', 'host')
+    test:is(uri_set[1].service, '/tmp/unix.sock', 'service')
+    test:is(uri_set[1].unix, '/tmp/unix.sock', 'unix')
+    test:is(type(uri_set[1].params["q"]), "table", "name")
+    test:is(#uri_set[1].params["q"], 1, "value count")
+    test:is(uri_set[1].params["q"][1], "v", "param value")
+end
+
+local function test_parse_invalid_uri_set_from_lua_table(test)
+    -- Tests for uri.parse_many() Lua bindings.
+    -- (Several invalid URIs with query parameters, passed in different ways).
+    test:plan(25)
+
+    local uri_set
+
+    -- Invalid type passed to "parse_many"
+    uri_set = uri.parse_many(function() end)
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Invalid type of value for numerical key
+    uri_set = uri.parse_many({"/tmp/unix.sock", function() end})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Invalid type of value for string keys
+    uri_set = uri.parse_many({"/tmp/unix.sock", uri = function() end})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({"/tmp/unix.sock", params = function() end})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({"/tmp/unix.sock", params = ""})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({"/tmp/unix.sock", default_params = ""})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({"/tmp/unix.sock", default_params = ""})
+    test:isnil(uri_set, "invalid uri", uri_set)
+
+    -- Mix "uri=" and numerical keys is banned
+    uri_set = uri.parse_many({"/tmp/unix.sock", uri = "/tmp/unix.sock"})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Several URIs in one string is allowed only when the
+    -- passed as a single string.
+    uri_set = uri.parse_many({"/tmp/unix.sock, /tmp/unix.sock"})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- "params" table is allowed only for single URI
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock", "/tmp/unix.sock",
+        params = {q1 = "v1"}
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- "params" table is not allowed with nested tables
+    uri_set = uri.parse_many({
+        {"/tmp/unix.sock"},
+        params = {q1 = "v1"}
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- "default_params" table is not allowed in nested URI tables
+    uri_set = uri.parse_many({{"/tmp/unix.sock", default_params = {}}})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- "default_params" table is not allowed for single URI
+    uri_set = uri.parse_many({"/tmp/unix.sock", default_params = {}})
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Only one URI is allowed in nested tables
+    uri_set = uri.parse_many({
+        {"/tmp/unix.sock", "/tmp/unix.sock"},
+        default_params = {q = "v"}
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Nested URI tables is not allowed in nested tables
+    uri_set = uri.parse_many({
+        {"/tmp/unix.sock", {}}
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Nested URI table without URI is now allowed
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        { params = {q = "v"} }
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Only string key types are allowed in "params" and
+    -- "default_params" table
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        params = {"v"},
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        default_params = {"v"},
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Invalid type of values in "params" and
+    -- "default_params" table
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        params = {q = function() end},
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        default_params = {q = function() end},
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        params = {q = {function() end}},
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        default_params = {q = {function() end}},
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Invalid uri string in URIs table
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        "://"
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Invalid uri in nested URI table
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        {"://"}
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+    -- Same as previous but with "uri=" syntax
+    uri_set = uri.parse_many({
+        "/tmp/unix.sock",
+        {uri = "://"}
+    })
+    test:isnil(uri_set, "invalid uri", uri_set)
+end
+
 tap.test("uri", function(test)
-    test:plan(4)
+    test:plan(6)
     test:test("parse", test_parse)
     test:test("parse URI query params", test_parse_uri_query_params)
     test:test("parse URIs with query params", test_parse_uri_set_with_query_params)
+    test:test("parse URIs from lua table", test_parse_uri_set_from_lua_table)
+    test:test("parse invalid URIs from lua table", test_parse_invalid_uri_set_from_lua_table)
     test:test("format", test_format)
 end)
