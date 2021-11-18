@@ -157,10 +157,9 @@ applier_stop(struct applier *applier);
  * remote uri (copied to struct applier).
  *
  * @pre     the uri is a valid and checked one
- * @error   throws OutOfMemory exception if out of memory.
  */
 struct applier *
-applier_new(const char *uri);
+applier_new(struct uri *uri);
 
 /**
  * Destroy and delete a applier.
