@@ -1,6 +1,6 @@
 #!/usr/bin/env tarantool
 local test = require("sqltester")
-test:plan(110)
+test:plan(131)
 
 box.schema.func.create('M1', {
     language = 'Lua',
@@ -980,6 +980,189 @@ test:do_catchsql_test(
         SELECT ZEROBLOB(m) FROM t;
     ]], {
         1, "Failed to execute SQL statement: wrong arguments for function ZEROBLOB()"
+    })
+
+-- Make sure syntax for MAP values works as intended.
+test:do_execsql_test(
+    "map-13.1",
+    [[
+        SELECT {'a': a, 'g': g, 't': t, 'n': n, 'f': f, 'i': i, 'b': b, 'v': v,
+                's': s, 'd': d, 'u': u} FROM t1 WHERE id = 1;
+    ]], {
+        {t = "1", f = 1, n = 1, v = "1", g = 1, b = true, s = 1,
+         d = require('decimal').new(1), a = {a = 1}, i = 1,
+         u = require('uuid').fromstr('11111111-1111-1111-1111-111111111111')}
+    })
+
+test:do_execsql_test(
+    "map-13.2",
+    [[
+        SELECT {'q': 1, 'w': true, 'e': 1.5e0, 'r': ['asd', x'32'], 't': 123.0};
+    ]], {
+        {w = true, e = 1.5, r = {'asd', '2'}, t = require('decimal').new(123),
+         q = 1}
+    })
+
+test:do_execsql_test(
+    "map-13.3",
+    [[
+        SELECT typeof({1: 1});
+    ]], {
+        "map"
+    })
+
+test:do_execsql_test(
+    "map-13.4",
+    [[
+        SELECT printf({});
+    ]], {
+        '{}'
+    })
+
+local map = {[0] = 0}
+local str = '0: 0'
+for i = 1, 1000 do map[i] = i str = str .. string.format(', %d: %d', i, i) end
+test:do_execsql_test(
+    "map-13.5",
+    [[
+        SELECT {]]..str..[[};
+    ]], {
+        map
+    })
+
+-- Make sure MAP() accepts only INTEGER, STRING and UUID as keys.
+test:do_execsql_test(
+    "map-13.4",
+    [[
+        SELECT {1: 1};
+    ]], {
+        {[1] = 1}
+    })
+
+test:do_execsql_test(
+    "map-13.5",
+    [[
+        SELECT {-1: 1};
+    ]], {
+        {[-1] = 1}
+    })
+
+test:do_execsql_test(
+    "map-13.6",
+    [[
+        SELECT {'a': 1};
+    ]], {
+        {a = 1}
+    })
+
+test:do_execsql_test(
+    "map-13.6",
+    [[
+        SELECT typeof({UUID(): 1});
+    ]], {
+        "map"
+    })
+
+test:do_catchsql_test(
+    "map-13.7",
+    [[
+        SELECT {1.5e0: 1};
+    ]], {
+        1, "Only integer, string and uuid can be keys in map"
+    })
+
+test:do_catchsql_test(
+    "map-13.8",
+    [[
+        SELECT {1.5: 1};
+    ]], {
+        1, "Only integer, string and uuid can be keys in map"
+    })
+
+test:do_catchsql_test(
+    "map-13.9",
+    [[
+        SELECT {x'33': 1};
+    ]], {
+        1, "Only integer, string and uuid can be keys in map"
+    })
+
+test:do_catchsql_test(
+    "map-13.10",
+    [[
+        SELECT {[1, 2, 3]: 1};
+    ]], {
+        1, "Only integer, string and uuid can be keys in map"
+    })
+
+test:do_catchsql_test(
+    "map-13.11",
+    [[
+        SELECT {{'a': 1}: 1};
+    ]], {
+        1,
+        'Only integer, string and uuid can be keys in map'
+    })
+
+test:do_catchsql_test(
+    "map-13.12",
+    [[
+        SELECT {CAST(1 AS NUMBER): 1};
+    ]], {
+        1, 'Only integer, string and uuid can be keys in map'
+    })
+
+test:do_catchsql_test(
+    "map-13.13",
+    [[
+        SELECT {CAST(1 AS SCALAR): 1};
+    ]], {
+        1, 'Only integer, string and uuid can be keys in map'
+    })
+
+test:do_catchsql_test(
+    "map-13.14",
+    [[
+        SELECT {CAST(1 AS ANY): 1};
+    ]], {
+        1, 'Only integer, string and uuid can be keys in map'
+    })
+
+test:do_test(
+    "map-13.15",
+    function()
+        local res = {pcall(box.execute, [[SELECT {?: 1};]], {1.5})}
+        return {tostring(res[3])}
+    end, {
+        "Type mismatch: can not convert double(1.5) to integer, string or uuid"
+    })
+
+-- Make sure symbol ':' is properly processed by parser.
+test:do_test(
+    "map-14.1",
+    function()
+        local res = {pcall(box.execute, [[SELECT {:name};]], {{[':name'] = 1}})}
+        return {tostring(res[3])}
+    end, {
+        "Syntax error at line 1 near '}'"
+    })
+
+test:do_test(
+    "map-14.2",
+    function()
+        local res = box.execute([[SELECT {:name: 5}]], {{[':name'] = 1}})
+        return {tostring(res.rows[1])}
+    end, {
+        "[{1: 5}]"
+    })
+
+test:do_test(
+    "map-14.3",
+    function()
+        local res = box.execute([[SELECT {5::name}]], {{[':name'] = 1}})
+        return {tostring(res.rows[1])}
+    end, {
+        "[{5: 1}]"
     })
 
 box.execute([[DROP TABLE t1;]])
