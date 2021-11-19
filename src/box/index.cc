@@ -37,6 +37,7 @@
 #include "iproto_constants.h"
 #include "txn.h"
 #include "rmean.h"
+#include "upgrade.h"
 #include "info/info.h"
 #include "memtx_tx.h"
 
@@ -250,8 +251,16 @@ box_index_get(uint32_t space_id, uint32_t index_id, const char *key,
 	txn_commit_ro_stmt(txn, &svp);
 	/* Count statistics. */
 	rmean_collect(rmean_box, IPROTO_SELECT, 1);
-	if (*result != NULL)
+	if (*result != NULL) {
+		if (space_is_upgraded(space)) {
+			struct tuple *upgraded_tuple = NULL;
+			if (space_upgrade_convert_tuple(space, *result,
+							&upgraded_tuple) != 0)
+				return -1;
+			*result = upgraded_tuple;
+		}
 		tuple_bless(*result);
+	}
 	return 0;
 }
 
@@ -399,8 +408,19 @@ box_iterator_next(box_iterator_t *itr, box_tuple_t **result)
 	assert(result != NULL);
 	if (iterator_next(itr, result) != 0)
 		return -1;
-	if (*result != NULL)
+	if (*result != NULL) {
+		//TODO: remove space lookup on each iterator_next invocation.
+		struct space *space = space_by_id(itr->space_id);
+		assert(space != NULL);
+		if (space_is_upgraded(space)) {
+			struct tuple *upgraded_tuple = NULL;
+			if (space_upgrade_convert_tuple(space, *result,
+							&upgraded_tuple) != 0)
+				return -1;
+			*result = upgraded_tuple;
+		}
 		tuple_bless(*result);
+	}
 	return 0;
 }
 

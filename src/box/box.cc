@@ -83,6 +83,7 @@
 #include "raft.h"
 #include "trivia/util.h"
 #include "version.h"
+#include "upgrade.h"
 
 static char status[64] = "unknown";
 
@@ -2298,6 +2299,13 @@ box_select(uint32_t space_id, uint32_t index_id,
 		if (offset > 0) {
 			offset--;
 			continue;
+		}
+		if (space_is_upgraded(space)) {
+			struct tuple *upgraded_tuple = NULL;
+			if (space_upgrade_convert_tuple(space, tuple,
+							&upgraded_tuple) != 0)
+				return -1;
+			tuple = upgraded_tuple;
 		}
 		rc = port_c_add_tuple(port, tuple);
 		if (rc != 0)
