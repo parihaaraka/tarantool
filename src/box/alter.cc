@@ -568,6 +568,32 @@ space_format_decode(const char *data, uint32_t *out_count,
 	return 0;
 }
 
+int
+space_opts_check(struct space_opts *opts, const char *name, uint32_t name_len,
+		 uint32_t errcode)
+{
+	/*
+	 * Currently, only predefined replication groups
+	 * are supported.
+	 */
+	if (opts->group_id != GROUP_DEFAULT &&
+	    opts->group_id != GROUP_LOCAL) {
+		diag_set(ClientError, ER_NO_SUCH_GROUP,
+			 int2str(opts->group_id));
+		return -1;
+	}
+	if (opts->is_view && opts->sql == NULL) {
+		diag_set(ClientError, ER_VIEW_MISSING_SQL);
+		return -1;
+	}
+	if (opts->is_sync && opts->group_id == GROUP_LOCAL) {
+		diag_set(ClientError, errcode, tt_cstr(name, name_len),
+			 "local space can't be synchronous");
+		return -1;
+	}
+	return 0;
+}
+
 /**
  * Fill space_def structure from struct tuple.
  */
@@ -652,25 +678,8 @@ space_def_new_from_tuple(struct tuple *tuple, uint32_t errcode,
 	struct space_opts opts;
 	if (space_opts_decode(&opts, space_opts, region) != 0)
 		return NULL;
-	/*
-	 * Currently, only predefined replication groups
-	 * are supported.
-	 */
-	if (opts.group_id != GROUP_DEFAULT &&
-	    opts.group_id != GROUP_LOCAL) {
-		diag_set(ClientError, ER_NO_SUCH_GROUP,
-			 int2str(opts.group_id));
+	if (space_opts_check(&opts, name, name_len, errcode) != 0)
 		return NULL;
-	}
-	if (opts.is_view && opts.sql == NULL) {
-		diag_set(ClientError, ER_VIEW_MISSING_SQL);
-		return NULL;
-	}
-	if (opts.is_sync && opts.group_id == GROUP_LOCAL) {
-		diag_set(ClientError, errcode, tt_cstr(name, name_len),
-			 "local space can't be synchronous");
-		return NULL;
-	}
 	struct space_def *def =
 		space_def_new(id, uid, exact_field_count, name, name_len,
 			      engine_name, engine_name_len, &opts, fields,
