@@ -60,6 +60,7 @@ enum func_aggregate {
 };
 
 extern const char *func_aggregate_strs[];
+extern const struct opt_def func_opts_reg[];
 
 /** Function options. */
 struct func_opts {
@@ -71,8 +72,6 @@ struct func_opts {
 };
 
 extern const struct func_opts func_opts_default;
-extern const struct opt_def func_opts_reg[];
-
 /** Create index options using default values. */
 static inline void
 func_opts_create(struct func_opts *opts)

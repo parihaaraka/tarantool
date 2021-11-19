@@ -33,6 +33,7 @@
 #include "box/lua/tuple.h"
 #include "box/lua/key_def.h"
 #include "box/sql/sqlLimit.h"
+#include "box/upgrade.h"
 #include "lua/utils.h"
 #include "lua/trigger.h"
 
@@ -270,6 +271,22 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 	lua_pushstring(L, "before_replace");
 	lua_pushcfunction(L, lbox_space_before_replace);
 	lua_settable(L, i);
+
+	if (space->def->opts.upgrade != NULL) {
+		lua_pushstring(L, "upgrade_state");
+		lua_newtable(L);
+
+		struct space_upgrade *upgrade = space->def->opts.upgrade;
+		lua_pushstring(L, upgrade_status_strs[upgrade->status]);
+		lua_setfield(L, -2, "status");
+
+		if (upgrade->func != NULL) {
+			lua_pushstring(L, upgrade->func->def->name);
+			lua_setfield(L, -2, "function");
+		}
+
+		lua_settable(L, -3);
+	}
 
 	lua_getfield(L, i, "index");
 	if (lua_isnil(L, -1)) {
@@ -667,6 +684,8 @@ box_lua_space_init(struct lua_State *L)
 	lua_setfield(L, -2, "FUNC_INDEX_ID");
 	lua_pushnumber(L, BOX_SESSION_SETTINGS_ID);
 	lua_setfield(L, -2, "SESSION_SETTINGS_ID");
+	lua_pushnumber(L, BOX_SPACE_UPGRADE_ID);
+	lua_setfield(L, -2, "SPACE_UGPRADE_ID");
 	lua_pushnumber(L, BOX_SYSTEM_ID_MIN);
 	lua_setfield(L, -2, "SYSTEM_ID_MIN");
 	lua_pushnumber(L, BOX_SYSTEM_ID_MAX);
