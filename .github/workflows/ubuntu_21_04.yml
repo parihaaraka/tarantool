@@ -3,25 +3,34 @@ name: ubuntu_21_04
 on:
   push:
   pull_request:
-  repository_dispatch:
-    types: [backend_automation]
   workflow_dispatch:
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress:  ${{ github.ref != 'refs/heads/master' &&
-    !startsWith(github.ref, 'refs/heads/1.10') && !startsWith(github.ref, 'refs/heads/2.') }}
+
 jobs:
-  ubuntu_21_04:
+  setup:
     # We want to run on external PRs, but not on our own internal PRs
     # as they'll be run by the push to the branch.
     if: ( github.event_name == 'push' ||
-        github.event.pull_request.head.repo.full_name != github.repository ) &&
-        ! endsWith(github.ref, '-notest')
+      github.event.pull_request.head.repo.full_name != github.repository ) &&
+      ! endsWith(github.ref, '-notest')
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      group: ${{ steps.concurrency.outputs.group }}
+
+    steps:
+      - uses: actions/checkout@v2
+      - id: concurrency
+        uses: ./.github/actions/get-concurrency-group
+
+  ubuntu_21_04:
+    needs: setup
 
     runs-on: ubuntu-20.04-self-hosted
 
-    strategy:
-      fail-fast: false
+    concurrency:
+      group: ${{ needs.setup.outputs.group }}
+      cancel-in-progress: true
 
     steps:
       # Permissions correction is needed for self-host runners,

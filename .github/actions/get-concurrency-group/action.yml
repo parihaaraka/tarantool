@@ -1,0 +1,31 @@
+name: Get concurrency group
+
+description: Get the concurrency group for the running workflow
+
+outputs:
+  group:
+    description: The concurrency group name for the running workflow
+    value: ${{ steps.get-concurrency-group.outputs.group }}
+
+runs:
+  using: composite
+  steps:
+    - id: get-concurrency-group
+      env:
+        IS_DEV_BRANCH: ${{ github.ref != 'refs/heads/master' &&
+          !startsWith(github.ref, 'refs/heads/1.') &&
+          !startsWith(github.ref, 'refs/heads/2.') }}
+      run: |
+        if [ $IS_DEV_BRANCH = true ]; then
+          # Provide the same concurrency group for a development branch to
+          # cancel outdated workflow runs.
+          GROUP=${{ github.workflow }}-${{ github.ref }}
+        else
+          # Provide the unique concurrency group for master and release branches
+          # to avoid canceling workflow runs.
+          GROUP=${{ github.workflow }}-${{ github.sha }}
+        fi
+
+        echo "$GROUP"
+        echo "::set-output name=group::$GROUP"
+      shell: bash
