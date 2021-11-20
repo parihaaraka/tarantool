@@ -1,15 +1,15 @@
-name: Get Concurrency Options
+name: Get concurrency options
 
-description: Get concurrency options for the running job
+description: Get concurrency options for the running workflow
 
 outputs:
   group:
-    description: The concurrency group name for the running job
+    description: The concurrency group name for the running workflow
     value: ${{ steps.get-concurrency-opts.outputs.group }}
   cancel-in-progress:
-    description: >
-      Whether to cancel any currently running job in the same concurrency group
-      or not
+    description: |
+      Whether to cancel any currently running workflow in the same concurrency
+      group or not
     value: ${{ steps.get-concurrency-opts.outputs.cancel-in-progress }}
 
 runs:
@@ -17,16 +17,16 @@ runs:
   steps:
     - id: get-concurrency-opts
       env:
-        CANCEL_IN_PROGRESS: ${{ github.ref != 'refs/heads/master' &&
+        IS_DEV_BRANCH: ${{ github.ref != 'refs/heads/master' &&
           !startsWith(github.ref, 'refs/heads/1.') &&
           !startsWith(github.ref, 'refs/heads/2.') }}
       run: |
-        if [ $CANCEL_IN_PROGRESS = true ]; then
+        if [ IS_DEV_BRANCH = true ]; then
           GROUP=${{ github.workflow }}-${{ github.ref }}
         else
           GROUP=${{ github.workflow }}-${{ github.sha }}
         fi
 
         echo "::set-output name=group::$GROUP"
-        echo "::set-output name=cancel-in-progress::$CANCEL_IN_PROGRESS"
+        echo "::set-output name=cancel-in-progress::$IS_DEV_BRANCH"
       shell: bash
