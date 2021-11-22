@@ -48,6 +48,7 @@
 #include "ck_constraint.h"
 #include "assoc.h"
 #include "constraint_id.h"
+#include "tuple_compression.h"
 
 int
 access_check_space(struct space *space, user_access_t access)
@@ -583,6 +584,8 @@ space_execute_dml(struct space *space, struct txn *txn,
 	default:
 		*result = NULL;
 	}
+	if (*result != NULL)
+		*result = tuple_decompression(*result, space);
 	return 0;
 }
 

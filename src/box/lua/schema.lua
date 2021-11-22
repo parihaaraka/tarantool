@@ -150,6 +150,20 @@ box.priv = {
     ["ALL"] = builtin.PRIV_ALL
 }
 
+local function check_space_compression(compression)
+    local compression_types = {
+        ["lz4"] = true,
+        ["zstd#5"] = true,
+    }
+    if type(compression) ~= 'string' then
+        return false
+    end
+    if not compression_types[compression] then
+        return false
+    end
+    return true
+end
+
 local function user_or_role_resolve(user)
     local _vuser = box.space[box.schema.VUSER_ID]
     local tuple
@@ -421,6 +435,7 @@ box.schema.space.create = function(name, options)
         is_local = 'boolean',
         temporary = 'boolean',
         is_sync = 'boolean',
+        compression = "string",
     }
     local options_defaults = {
         engine = 'memtx',
@@ -458,6 +473,11 @@ box.schema.space.create = function(name, options)
             box.error(box.error.NO_SUCH_USER, options.user)
         end
     end
+    if options.compression then
+        if not check_space_compression(options.compression) then
+            box.error(box.error.ILLEGAL_PARAMS, "unexpected compression type")
+        end
+    end
     local format = options.format and options.format or {}
     check_param(format, 'format', 'table')
     format = update_format(format)
@@ -465,7 +485,8 @@ box.schema.space.create = function(name, options)
     local space_options = setmap({
         group_id = options.is_local and 1 or nil,
         temporary = options.temporary and true or nil,
-        is_sync = options.is_sync
+        is_sync = options.is_sync,
+        compression = options.compression
     })
     _space:insert{id, uid, name, options.engine, options.field_count,
         space_options, format}

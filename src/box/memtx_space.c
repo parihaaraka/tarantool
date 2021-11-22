@@ -43,6 +43,7 @@
 #include "memtx_engine.h"
 #include "column_mask.h"
 #include "sequence.h"
+#include "tuple_compression.h"
 
 /*
  * Yield every 1K tuples while building a new index or checking
@@ -187,34 +188,34 @@ memtx_space_replace_primary_key(struct space *space, struct tuple *old_tuple,
  *    has one simple sub-case and two with further
  *    ramifications:
  *
- *	A. dup_replace_mode is DUP_INSERT. Attempts to insert the
- *	new tuple into all indexes. If *any* of the unique indexes
- *	has a duplicate key, deletion is aborted, all of its
- *	effects are removed, and an error is thrown.
+ *      A. dup_replace_mode is DUP_INSERT. Attempts to insert the
+ *      new tuple into all indexes. If *any* of the unique indexes
+ *      has a duplicate key, deletion is aborted, all of its
+ *      effects are removed, and an error is thrown.
  *
- *	B. dup_replace_mode is DUP_REPLACE. It means an existing
- *	tuple has to be replaced with the new one. To do it, tries
- *	to find a tuple with a duplicate key in the primary index.
- *	If the tuple is not found, throws an error. Otherwise,
- *	replaces the old tuple with a new one in the primary key.
- *	Continues on to secondary keys, but if there is any
- *	secondary key, which has a duplicate tuple, but one which
- *	is different from the duplicate found in the primary key,
- *	aborts, puts everything back, throws an exception.
+ *      B. dup_replace_mode is DUP_REPLACE. It means an existing
+ *      tuple has to be replaced with the new one. To do it, tries
+ *      to find a tuple with a duplicate key in the primary index.
+ *      If the tuple is not found, throws an error. Otherwise,
+ *      replaces the old tuple with a new one in the primary key.
+ *      Continues on to secondary keys, but if there is any
+ *      secondary key, which has a duplicate tuple, but one which
+ *      is different from the duplicate found in the primary key,
+ *      aborts, puts everything back, throws an exception.
  *
- *	For example, if there is a space with 3 unique keys and
- *	two tuples { 1, 2, 3 } and { 3, 1, 2 }:
+ *      For example, if there is a space with 3 unique keys and
+ *      two tuples { 1, 2, 3 } and { 3, 1, 2 }:
  *
- *	This REPLACE/DUP_REPLACE is OK: { 1, 5, 5 }
- *	This REPLACE/DUP_REPLACE is not OK: { 2, 2, 2 } (there
- *	is no tuple with key '2' in the primary key)
- *	This REPLACE/DUP_REPLACE is not OK: { 1, 1, 1 } (there
- *	is a conflicting tuple in the secondary unique key).
+ *      This REPLACE/DUP_REPLACE is OK: { 1, 5, 5 }
+ *      This REPLACE/DUP_REPLACE is not OK: { 2, 2, 2 } (there
+ *      is no tuple with key '2' in the primary key)
+ *      This REPLACE/DUP_REPLACE is not OK: { 1, 1, 1 } (there
+ *      is a conflicting tuple in the secondary unique key).
  *
- *	C. dup_replace_mode is DUP_REPLACE_OR_INSERT. If
- *	there is a duplicate tuple in the primary key, behaves the
- *	same way as DUP_REPLACE, otherwise behaves the same way as
- *	DUP_INSERT.
+ *      C. dup_replace_mode is DUP_REPLACE_OR_INSERT. If
+ *      there is a duplicate tuple in the primary key, behaves the
+ *      same way as DUP_REPLACE, otherwise behaves the same way as
+ *      DUP_INSERT.
  *
  * 3. UPDATE has to delete the old tuple and insert a new one.
  *    dup_replace_mode is ignored.
@@ -336,9 +337,8 @@ memtx_space_execute_replace(struct space *space, struct txn *txn,
 	struct memtx_space *memtx_space = (struct memtx_space *)space;
 	struct txn_stmt *stmt = txn_current_stmt(txn);
 	enum dup_replace_mode mode = dup_replace_mode(request->type);
-	stmt->new_tuple =
-		space->format->vtab.tuple_new(space->format, request->tuple,
-					      request->tuple_end);
+	stmt->new_tuple = tuple_new_with_compression(space, request->tuple,
+						     request->tuple_end);
 	if (stmt->new_tuple == NULL)
 		return -1;
 	tuple_ref(stmt->new_tuple);
@@ -422,9 +422,8 @@ memtx_space_execute_update(struct space *space, struct txn *txn,
 	if (new_data == NULL)
 		return -1;
 
-	stmt->new_tuple =
-		space->format->vtab.tuple_new(format, new_data,
-					      new_data + new_size);
+	stmt->new_tuple = tuple_new_with_compression(space, new_data,
+						     new_data + new_size);
 	if (stmt->new_tuple == NULL)
 		return -1;
 	tuple_ref(stmt->new_tuple);
@@ -495,8 +494,8 @@ memtx_space_execute_upsert(struct space *space, struct txn *txn,
 			return -1;
 		}
 		stmt->new_tuple =
-			space->format->vtab.tuple_new(format, request->tuple,
-						      request->tuple_end);
+			tuple_new_with_compression(space, request->tuple,
+						   request->tuple_end);
 		if (stmt->new_tuple == NULL)
 			return -1;
 		tuple_ref(stmt->new_tuple);
@@ -520,8 +519,8 @@ memtx_space_execute_upsert(struct space *space, struct txn *txn,
 			return -1;
 
 		stmt->new_tuple =
-			space->format->vtab.tuple_new(format, new_data,
-						      new_data + new_size);
+			tuple_new_with_compression(space, new_data,
+						   new_data + new_size);
 		if (stmt->new_tuple == NULL)
 			return -1;
 		tuple_ref(stmt->new_tuple);
@@ -726,7 +725,7 @@ memtx_space_check_index_def(struct space *space, struct index_def *index_def)
 			diag_set(ClientError, ER_MODIFY_INDEX,
 				 index_def->name, space_name(space),
 				 "BITSET index field type must be "
-	 			 "NUM or STR or VARBINARY");
+				 "NUM or STR or VARBINARY");
 			return -1;
 		}
 		if (key_def->is_multikey) {
