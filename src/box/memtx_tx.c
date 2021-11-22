@@ -874,7 +874,7 @@ memtx_tx_story_gc_step()
 	}
 
 	/* Lowest read view PSN */
-	int64_t lowest_rv_psm = txn_last_psn;
+	int64_t lowest_rv_psm = txn_last_psn + 1;
 	if (!rlist_empty(&txm.read_view_txs)) {
 		struct txn *txn =
 			rlist_first_entry(&txm.read_view_txs, struct txn,
