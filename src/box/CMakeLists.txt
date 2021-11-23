@@ -172,6 +172,7 @@ add_library(box STATIC
     port.c
     txn.c
     tx_memory.c
+    memtx_tx_memory.c
     txn_limbo.c
     raft.c
     box.cc
