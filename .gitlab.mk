@@ -117,8 +117,20 @@ vms_shutdown:
 GIT_DESCRIBE=$(shell git describe HEAD)
 GIT_TAG=$(shell git tag --points-at HEAD)
 MAJOR_VERSION=$(word 1,$(subst ., ,$(GIT_DESCRIBE)))
-BUCKET="series-$(MAJOR_VERSION)"
-S3_BUCKET_URL="s3://tarantool_repo/sources"
+MINOR_VERSION=$(word 2,$(subst ., ,$(GIT_DESCRIBE)))
+VERSION=$(MAJOR_VERSION).$(MINOR_VERSION)
+
+ifeq ($(VERSION), $(filter $(VERSION), 1.10 2.8))
+TNT_VERSION_S3_DIR=$(MAJOR_VERSION).$(MINOR_VERSION)
+S3_BUCKET_URL=s3://tarantool_repo/sources/$(TNT_VERSION_S3_DIR)
+else
+TNT_VERSION_S3_DIR=series-$(MAJOR_VERSION)
+S3_BUCKET_URL=s3://tarantool_repo/sources
+endif
+
+RWS_BASE_URL=https://rws.tarantool.org
+RWS_ENDPOINT=${RWS_BASE_URL}/${REPO_S3_DIR}/${TNT_VERSION_S3_DIR}/${OS}/${DIST}
+PRODUCT_NAME=tarantool
 
 deploy_prepare:
 	rm -rf packpack
@@ -137,21 +149,20 @@ package: deploy_prepare
 	TARBALL_EXTRA_ARGS="--exclude=*.exe --exclude=*.dll"                                                            \
 	PRESERVE_ENVVARS="TARBALL_EXTRA_ARGS,${PRESERVE_ENVVARS}" ./packpack/packpack
 
-# found that libcreaterepo_c.so installed in local lib path
-deploy: export LD_LIBRARY_PATH=/usr/local/lib
-
 deploy:
-	echo ${GPG_SECRET_KEY} | base64 -d | gpg --batch --import || true
-	case "${GITHUB_REF}" in                                       \
-	refs/tags/*-alpha*|refs/tags/*-beta*|refs/tags/*-rc*) \
-	    ./tools/update_repo.sh -o=${OS} -d=${DIST}            \
-			-b="${PRERELEASE_REPO_S3_DIR}/${BUCKET}" build ; \
-	        ;;                                                    \
-	refs/tags/*)                                                  \
-		./tools/update_repo.sh -o=${OS} -d=${DIST}            \
-			-b="${RELEASE_REPO_S3_DIR}/${BUCKET}" build ; \
-	        ;;                                                    \
-	esac
+	if [ -z "${REPO_S3_DIR}" ]; then \
+		echo "Env variable 'REPO_S3_DIR' must be defined!"; \
+		exit 1; \
+	fi; \
+	CURL_CMD="curl --retry 5 --retry-delay 5 -LfsS \
+		-X PUT ${RWS_ENDPOINT} \
+		-u $${RWS_AUTH} \
+		-F product=${PRODUCT_NAME}"; \
+	for f in $$(ls -I '*build*' -I '*.changes' ./build); do \
+		CURL_CMD="$${CURL_CMD} -F $$(basename $${f})=@./build/$${f}"; \
+	done; \
+	echo $${CURL_CMD}; \
+	$${CURL_CMD}
 
 source: deploy_prepare
 	if [ -n "$(GIT_TAG)" ]; then                                                                     \
@@ -164,9 +175,9 @@ source: deploy_prepare
 
 source_deploy: source
 	( aws --endpoint-url "${AWS_S3_ENDPOINT_URL}" s3 ls "${S3_BUCKET_URL}/" || \
-		( rm -rf "${BUCKET}" ; mkdir "${BUCKET}" &&                        \
+		( rm -rf "${TNT_VERSION_S3_DIR}" ; mkdir "${TNT_VERSION_S3_DIR}" &&                        \
 			aws --endpoint-url "${AWS_S3_ENDPOINT_URL}"                \
-				s3 mv "${BUCKET}" "${S3_BUCKET_URL}" --recursive   \
+				s3 mv "${TNT_VERSION_S3_DIR}" "${S3_BUCKET_URL}" --recursive   \
 				--acl public-read ) ) &&                           \
 		aws --endpoint-url "${AWS_S3_ENDPOINT_URL}"                        \
 			s3 cp build/*.tar.gz "${S3_BUCKET_URL}/" --acl public-read
