@@ -472,6 +472,7 @@ space_upgrade(uint32_t space_id)
 				 "%lu", processed_tuples);
 			rc = txn_commit(txn);
 			fiber_gc();
+			ERROR_INJECT_YIELD(ERRINJ_SPACE_UPGRADE_DELAY);
 			tuple_unref(tuple);
 		}
 	}
