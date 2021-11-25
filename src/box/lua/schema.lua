@@ -655,7 +655,7 @@ local function check_upgrade_mode(mode)
     end
 end
 
-local function space_upgrade_run(space_id, mode, func_id, format)
+local function space_upgrade_run(space_id, mode, func_id, format, on_error)
     local _space_upgrade = box.space._space_upgrade
     local su = _space_upgrade:get({space_id})
     local s = box.space._space:get({space_id})
@@ -668,7 +668,10 @@ local function space_upgrade_run(space_id, mode, func_id, format)
         _space_upgrade:replace({space_id, "test", func_id, format})
         rc = builtin.space_upgrade_test(space_id)
         assert(box.space._space_upgrade:get({space_id}) == nil)
-        if rc ~= 0 then box.error() end
+        if rc ~= 0 then
+            if on_error ~= nil then on_error() end
+            box.error()
+        end
         log.info(":upgrade() test is finished")
     end
 
@@ -694,6 +697,7 @@ local function space_upgrade_run(space_id, mode, func_id, format)
         -- corresponding tuple.
         --
         box.space._space_upgrade:delete(space_id)
+        if on_error ~= nil then on_error() end
         box.error(err)
     end
     log.info("Changed space format")
@@ -702,17 +706,20 @@ local function space_upgrade_run(space_id, mode, func_id, format)
     if rc ~= 0 then
         -- Space's format remains updated.
         assert(box.space._space_upgrade:get({space_id})[2] == "error")
+        if on_error ~= nil then on_error() end
         box.error()
     end
     assert(box.space._space_upgrade:get({space_id}) == nil)
     log.info("Space upgrade has successfully finished")
 end
 
-box.schema.space.upgrade = function(space_id, mode, func, format, background)
+box.schema.space.upgrade = function(space_id, mode, func, format, background,
+                                    on_error)
     check_param(mode, 'mode', 'string')
     check_param(func, 'func', 'string')
     if format ~= nil then check_param(format, 'format', 'table') end
     if background == nil then background = false end
+    if on_error~= nil then check_param(on_error, 'on_error', 'function') end
     check_param(background, 'background', 'boolean')
     check_upgrade_mode(mode)
 
@@ -730,9 +737,9 @@ box.schema.space.upgrade = function(space_id, mode, func, format, background)
     if background then
         log.info("Started space:upgrade() process in a background fiber")
         return fiber.create(space_upgrade_run, space_id, mode, func_id,
-                            format, box.info.uuid)
+                            format, on_error, box.info.uuid)
     end
-    space_upgrade_run(space_id, mode, func_id, format, box.info.uuid)
+    space_upgrade_run(space_id, mode, func_id, format, on_error, box.info.uuid)
 end
 
 box.schema.index = {}
@@ -2266,10 +2273,11 @@ space_mt.alter = function(space, options)
     check_space_exists(space)
     return box.schema.space.alter(space.id, options)
 end
-space_mt.upgrade = function(space, mode, func, format, background)
+space_mt.upgrade = function(space, mode, func, format, background, on_error)
     check_space_arg(space, 'upgrade')
     check_space_exists(space)
-    return box.schema.space.upgrade(space.id, mode, func, format, background)
+    return box.schema.space.upgrade(space.id, mode, func, format, background,
+                                    on_error)
 end
 space_mt.create_index = function(space, name, options)
     check_space_arg(space, 'create_index')
