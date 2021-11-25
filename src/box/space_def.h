@@ -75,6 +75,8 @@ struct space_opts {
 	bool is_sync;
 	/** SQL statement that produced this space. */
 	char *sql;
+	/* Type of tuple fields compression for this space */
+	enum compression_type compression_type;
 };
 
 extern const struct space_opts space_opts_default;

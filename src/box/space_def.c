@@ -43,6 +43,7 @@ const struct space_opts space_opts_default = {
 	/* .view = */ false,
 	/* .is_sync = */ false,
 	/* .sql        = */ NULL,
+	/* .compression_type = */ COMPRESSION_TYPE_NONE,
 };
 
 const struct opt_def space_opts_reg[] = {
@@ -52,6 +53,8 @@ const struct opt_def space_opts_reg[] = {
 	OPT_DEF("is_sync", OPT_BOOL, struct space_opts, is_sync),
 	OPT_DEF("sql", OPT_STRPTR, struct space_opts, sql),
 	OPT_DEF_LEGACY("checks"),
+	OPT_DEF_ENUM("compression", compression_type, struct space_opts,
+		     compression_type, NULL),
 	OPT_END,
 };
 

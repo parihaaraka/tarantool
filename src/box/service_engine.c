@@ -71,7 +71,7 @@ service_engine_create_space(struct engine *engine, struct space_def *def,
 				 key_count, def->fields, def->field_count,
 				 def->exact_field_count, def->dict,
 				 def->opts.is_temporary,
-				 def->opts.is_ephemeral);
+				 def->opts.is_ephemeral, space);
 	if (format == NULL) {
 		free(space);
 		return NULL;

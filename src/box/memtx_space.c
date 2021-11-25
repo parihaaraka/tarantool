@@ -336,6 +336,8 @@ memtx_space_execute_replace(struct space *space, struct txn *txn,
 	struct memtx_space *memtx_space = (struct memtx_space *)space;
 	struct txn_stmt *stmt = txn_current_stmt(txn);
 	enum dup_replace_mode mode = dup_replace_mode(request->type);
+	const char *data;
+	
 	stmt->new_tuple =
 		space->format->vtab.tuple_new(space->format, request->tuple,
 					      request->tuple_end);
@@ -726,7 +728,7 @@ memtx_space_check_index_def(struct space *space, struct index_def *index_def)
 			diag_set(ClientError, ER_MODIFY_INDEX,
 				 index_def->name, space_name(space),
 				 "BITSET index field type must be "
-	 			 "NUM or STR or VARBINARY");
+				 "NUM or STR or VARBINARY");
 			return -1;
 		}
 		if (key_def->is_multikey) {
@@ -1337,7 +1339,8 @@ memtx_space_new(struct memtx_engine *memtx,
 		tuple_format_new(&memtx_tuple_format_vtab, memtx, keys, key_count,
 				 def->fields, def->field_count,
 				 def->exact_field_count, def->dict,
-				 def->opts.is_temporary, def->opts.is_ephemeral);
+				 def->opts.is_temporary, def->opts.is_ephemeral,
+				 (struct space *)memtx_space);
 	if (format == NULL) {
 		free(memtx_space);
 		return NULL;

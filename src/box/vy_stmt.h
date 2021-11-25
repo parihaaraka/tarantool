@@ -99,7 +99,7 @@ struct tuple_format *
 vy_stmt_format_new(struct vy_stmt_env *env, struct key_def *const *keys,
 		   uint16_t key_count, const struct field_def *fields,
 		   uint32_t field_count, uint32_t exact_field_count,
-		   struct tuple_dictionary *dict);
+		   struct tuple_dictionary *dict, struct space *space);
 
 /** Statement flags. */
 enum {
@@ -497,7 +497,7 @@ vy_stmt_new_surrogate_delete(struct tuple_format *format, struct tuple *tuple)
  */
 struct tuple *
 vy_stmt_new_replace(struct tuple_format *format, const char *tuple,
-                    const char *tuple_end);
+		    const char *tuple_end);
 
 /**
  * Create the INSERT statement from raw MessagePack data.

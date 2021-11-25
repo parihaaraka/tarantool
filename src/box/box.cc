@@ -2012,6 +2012,7 @@ box_set_memtx_max_tuple_size(void)
 		return -1;
 	}
 	memtx_engine_set_max_tuple_size(memtx, memtx_max_tuple_size);
+	tuple_compression_buffer_alloc(memtx_max_tuple_size);
 	return 0;
 }
 
@@ -2105,6 +2106,7 @@ box_set_vinyl_max_tuple_size(void)
 		return -1;
 	}
 	vinyl_engine_set_max_tuple_size(vinyl, vinyl_max_tuple_size);
+	tuple_compression_buffer_alloc(vinyl_max_tuple_size);
 	return 0;
 }
 

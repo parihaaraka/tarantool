@@ -56,7 +56,7 @@ private:
 		kdp.type = FIELD_TYPE_UNSIGNED;
 		kd = key_def_new(&kdp, 1, false);
 		fmt = tuple_format_new(&memtx_tuple_format_vtab, &memtx, &kd, 1,
-					  NULL, 0, 0, NULL, false, false);
+					  NULL, 0, 0, NULL, false, false, NULL);
 		tuple_format_ref(fmt);
 	}
 	~MemtxEngine()

@@ -82,7 +82,7 @@ struct tuple_format_vtab {
 	 */
 	struct tuple*
 	(*tuple_new)(struct tuple_format *format, const char *data,
-	             const char *end);
+		     const char *end);
 	/**
 	 * Free a tuple_chunk allocated for given tuple and
 	 * data.
@@ -244,6 +244,8 @@ struct tuple_format {
 	 * tuple_field::token.
 	 */
 	struct json_tree fields;
+	/** Pointer to space which owns this tuple format or NULL. */
+	struct space *space;
 };
 
 /**
@@ -335,6 +337,7 @@ tuple_format_unref(struct tuple_format *format)
  * @param exact_field_count Exact field count for format.
  * @param is_temporary Set if format belongs to temporary space.
  * @param is_reusable Set if format may be reused.
+ * @param space pointer to struct space, which owns this format or NULL.
  *
  * @retval not NULL Tuple format.
  * @retval     NULL Memory error.
@@ -345,7 +348,7 @@ tuple_format_new(struct tuple_format_vtab *vtab, void *engine,
 		 const struct field_def *space_fields,
 		 uint32_t space_field_count, uint32_t exact_field_count,
 		 struct tuple_dictionary *dict, bool is_temporary,
-		 bool is_reusable);
+		 bool is_reusable, struct space *space);
 
 /**
  * Check, if @a format1 can store any tuples of @a format2. For

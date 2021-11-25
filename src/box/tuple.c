@@ -296,7 +296,7 @@ tuple_init(field_name_hash_f hash)
 	 */
 	tuple_format_runtime = tuple_format_new(&tuple_format_runtime_vtab, NULL,
 						NULL, 0, NULL, 0, 0, NULL, false,
-						false);
+						false, NULL);
 	if (tuple_format_runtime == NULL)
 		return -1;
 
@@ -568,7 +568,7 @@ box_tuple_format_new(struct key_def **keys, uint16_t key_count)
 	box_tuple_format_t *format =
 		tuple_format_new(&tuple_format_runtime_vtab, NULL,
 				 keys, key_count, NULL, 0, 0, NULL, false,
-				 false);
+				 false, NULL);
 	if (format != NULL)
 		tuple_format_ref(format);
 	return format;
