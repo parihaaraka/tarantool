@@ -69,8 +69,8 @@ tuple_free(void);
  */
 void
 tuple_arena_create(struct slab_arena *arena, struct quota *quota,
-		   uint64_t arena_max_size, uint32_t slab_size,
-		   bool dontdump, const char *arena_name);
+                   uint64_t arena_max_size, uint32_t slab_size,
+                   bool dontdump, const char *arena_name);
 
 void
 tuple_arena_destroy(struct slab_arena *arena);
@@ -310,60 +310,64 @@ box_tuple_validate(box_tuple_t *tuple, box_tuple_format_t *format);
  */
 struct PACKED tuple
 {
-	/**
-	 * Local reference counter. After hitting the limit a part of this
-	 * counter is uploaded to external storage that is acquired back
-	 * when the counter falls back to zero.
-	 * Is always nonzero in normal reference counted tuples.
-	 * Must not be accessed directly, use @sa tuple_create,
-	 * tuple_ref_init, tuple_ref, tuple_unref instead.
-	 */
-	uint8_t local_refs;
-	/**
-	 * Flag that shows that the tuple has more references in separate
-	 * external storage, see @sa tuple_upload_refs and tuple_acquire_refs.
-	 * For private use only.
-	 */
-	bool has_uploaded_refs : 1;
-	/**
-	 * The tuple (if it's found in index for example) could be invisible
-	 * for current transactions. The flag means that the tuple must
-	 * be clarified by transaction engine.
-	 */
-	bool is_dirty : 1;
-	/** Format identifier. */
-	uint16_t format_id;
-	/**
-	 * A pair of fields for storing data offset and data bsize:
-	 * Data offset - to the MessagePack from the begin of the tuple.
-	 * Data bsize - length of the MessagePack data in raw part of the tuple.
-	 * These two values can be stored in bulky and compact modes.
-	 * In bulky mode offset is simple stored in data_offset_bsize_raw
-	 * member while bsize is stored in bsize_bulky.
-	 * In compact mode bsize_bulky is not used and both values are combined
-	 * in data_offset_bsize_raw: offset in high byte, bsize in low byte,
-	 * and the highest bit is set to 1 as a flag of compact mode.
-	 * They're for internal use only, must be set in tuple_create and
-	 * accessed by tuple_data_offset, tuple_bsize etc.
-	 */
-	uint16_t data_offset_bsize_raw;
-	uint32_t bsize_bulky;
-	/**
-	 * Engine specific fields and offsets array concatenated
-	 * with MessagePack fields array.
-	 * char raw[0];
-	 * Note that in compact mode bsize_bulky is no used and dynamic data
-	 * can be written starting from bsize_bulky member.
-	 */
+        /**
+         * Local reference counter. After hitting the limit a part of this
+         * counter is uploaded to external storage that is acquired back
+         * when the counter falls back to zero.
+         * Is always nonzero in normal reference counted tuples.
+         * Must not be accessed directly, use @sa tuple_create,
+         * tuple_ref_init, tuple_ref, tuple_unref instead.
+         */
+        uint8_t local_refs;
+        /**
+         * Flag that shows that the tuple has more references in separate
+         * external storage, see @sa tuple_upload_refs and tuple_acquire_refs.
+         * For private use only.
+         */
+        bool has_uploaded_refs : 1;
+        /**
+         * The tuple (if it's found in index for example) could be invisible
+         * for current transactions. The flag means that the tuple must
+         * be clarified by transaction engine.
+         */
+        bool is_dirty : 1;
+        /**
+         * Flag indicates, that tuple is compressed.
+         */
+        bool is_compressed : 1;
+        /** Format identifier. */
+        uint16_t format_id;
+        /**
+         * A pair of fields for storing data offset and data bsize:
+         * Data offset - to the MessagePack from the begin of the tuple.
+         * Data bsize - length of the MessagePack data in raw part of the tuple.
+         * These two values can be stored in bulky and compact modes.
+         * In bulky mode offset is simple stored in data_offset_bsize_raw
+         * member while bsize is stored in bsize_bulky.
+         * In compact mode bsize_bulky is not used and both values are combined
+         * in data_offset_bsize_raw: offset in high byte, bsize in low byte,
+         * and the highest bit is set to 1 as a flag of compact mode.
+         * They're for internal use only, must be set in tuple_create and
+         * accessed by tuple_data_offset, tuple_bsize etc.
+         */
+        uint16_t data_offset_bsize_raw;
+        uint32_t bsize_bulky;
+        /**
+         * Engine specific fields and offsets array concatenated
+         * with MessagePack fields array.
+         * char raw[0];
+         * Note that in compact mode bsize_bulky is no used and dynamic data
+         * can be written starting from bsize_bulky member.
+         */
 };
 
 static_assert(sizeof(struct tuple) == 10, "Just to be sure");
 
 enum {
-	/** Maximal value of tuple::local_refs. */
-	TUPLE_LOCAL_REF_MAX = UINT8_MAX,
-	/** The size that is unused in struct tuple in compact mode. */
-	TUPLE_COMPACT_SAVINGS = sizeof(((struct tuple *)(NULL))->bsize_bulky),
+        /** Maximal value of tuple::local_refs. */
+        TUPLE_LOCAL_REF_MAX = UINT8_MAX,
+        /** The size that is unused in struct tuple in compact mode. */
+        TUPLE_COMPACT_SAVINGS = sizeof(((struct tuple *)(NULL))->bsize_bulky),
 };
 
 /**
@@ -375,13 +379,13 @@ enum {
 static inline int
 tuple_check_data_offset(uint32_t data_offset)
 {
-	if (data_offset > INT16_MAX) {
-		/** tuple->data_offset is 15 bits */
-		diag_set(ClientError, ER_TUPLE_METADATA_IS_TOO_BIG,
-			 data_offset);
-		return -1;
-	}
-	return 0;
+        if (data_offset > INT16_MAX) {
+                /** tuple->data_offset is 15 bits */
+                diag_set(ClientError, ER_TUPLE_METADATA_IS_TOO_BIG,
+                         data_offset);
+                return -1;
+        }
+        return 0;
 }
 
 /**
@@ -393,11 +397,11 @@ tuple_check_data_offset(uint32_t data_offset)
 static inline bool
 tuple_can_be_compact(uint16_t data_offset, uint32_t bsize)
 {
-	/*
-	 * Compact mode requires data_offset to be 7 bits max and bsize
-	 * to be 8 bits max; see tuple::data_offset_bsize_raw for explanation.
-	 */
-	return data_offset <= INT8_MAX && bsize <= UINT8_MAX;
+        /*
+         * Compact mode requires data_offset to be 7 bits max and bsize
+         * to be 8 bits max; see tuple::data_offset_bsize_raw for explanation.
+         */
+        return data_offset <= INT8_MAX && bsize <= UINT8_MAX;
 }
 
 /**
@@ -417,23 +421,24 @@ tuple_can_be_compact(uint16_t data_offset, uint32_t bsize)
  */
 static inline void
 tuple_create(struct tuple *tuple, uint8_t refs, uint16_t format_id,
-	     uint16_t data_offset, uint32_t bsize, bool make_compact)
+             uint16_t data_offset, uint32_t bsize, bool make_compact)
 {
-	assert(data_offset <= INT16_MAX);
-	tuple->local_refs = refs;
-	tuple->has_uploaded_refs = false;
-	tuple->is_dirty = false;
-	tuple->format_id = format_id;
-	if (make_compact) {
-		assert(tuple_can_be_compact(data_offset, bsize));
-		uint16_t combined = 0x8000;
-		combined |= data_offset << 8;
-		combined |= bsize;
-		tuple->data_offset_bsize_raw = combined;
-	} else {
-		tuple->data_offset_bsize_raw = data_offset;
-		tuple->bsize_bulky = bsize;
-	}
+        assert(data_offset <= INT16_MAX);
+        tuple->local_refs = refs;
+        tuple->has_uploaded_refs = false;
+        tuple->is_dirty = false;
+        tuple->is_compressed = false;
+        tuple->format_id = format_id;
+        if (make_compact) {
+                assert(tuple_can_be_compact(data_offset, bsize));
+                uint16_t combined = 0x8000;
+                combined |= data_offset << 8;
+                combined |= bsize;
+                tuple->data_offset_bsize_raw = combined;
+        } else {
+                tuple->data_offset_bsize_raw = data_offset;
+                tuple->bsize_bulky = bsize;
+        }
 }
 
 /**
@@ -447,8 +452,8 @@ tuple_create(struct tuple *tuple, uint8_t refs, uint16_t format_id,
 static inline void
 tuple_ref_init(struct tuple *tuple, uint8_t refs)
 {
-	tuple->local_refs = refs;
-	tuple->has_uploaded_refs = false;
+        tuple->local_refs = refs;
+        tuple->has_uploaded_refs = false;
 }
 
 /**
@@ -465,69 +470,69 @@ tuple_ref_init(struct tuple *tuple, uint8_t refs)
 static inline bool
 tuple_is_unreferenced(struct tuple *tuple)
 {
-	/*
-	 * There's no need to look at external storage of reference counts,
-	 * because by design when local_refs falls to zero the storage is
-	 * checked immediately and the tuple is either deleted or local_refs
-	 * is set to nonzero value (TUPLE_UPLOAD_REFS).
-	 */
-	return tuple->local_refs == 0;
+        /*
+         * There's no need to look at external storage of reference counts,
+         * because by design when local_refs falls to zero the storage is
+         * checked immediately and the tuple is either deleted or local_refs
+         * is set to nonzero value (TUPLE_UPLOAD_REFS).
+         */
+        return tuple->local_refs == 0;
 }
 
 /** Check that the tuple is in compact mode. */
 static inline bool
 tuple_is_compact(struct tuple *tuple)
 {
-	return tuple->data_offset_bsize_raw & 0x8000;
+        return tuple->data_offset_bsize_raw & 0x8000;
 }
 
 /** Offset to the MessagePack from the beginning of the tuple. */
 static inline uint16_t
 tuple_data_offset(struct tuple *tuple)
 {
-	uint16_t res = tuple->data_offset_bsize_raw;
-	/*
-	 * We have two variants depending on high bit of res (res & 0x8000):
-	 * 1) nonzero, compact mode, the result is in high byte, excluding
-	 *  high bit: (res & 0x7fff) >> 8.
-	 * 2) zero, bulky mode, the result is just res.
-	 * We could make `if` statement here, but it would cost too much.
-	 * We can make branchless code instead. We can rewrite the result:
-	 * 1) In compact mode: (res & 0x7fff) >> 8
-	 * 2) In bulky mode:   (res & 0x7fff) >> 0
-	 * Or, simply:
-	 * In any case mode: (res & 0x7fff) >> (8 * (is_compact ? 1 : 0)).
-	 * On the other hand the compact 0/1 bit can be simply acquired
-	 * by shifting res >> 15.
-	 */
-	uint16_t is_compact_bit = res >> 15;
-	res = (res & 0x7fff) >> (is_compact_bit * 8);
+        uint16_t res = tuple->data_offset_bsize_raw;
+        /*
+         * We have two variants depending on high bit of res (res & 0x8000):
+         * 1) nonzero, compact mode, the result is in high byte, excluding
+         *  high bit: (res & 0x7fff) >> 8.
+         * 2) zero, bulky mode, the result is just res.
+         * We could make `if` statement here, but it would cost too much.
+         * We can make branchless code instead. We can rewrite the result:
+         * 1) In compact mode: (res & 0x7fff) >> 8
+         * 2) In bulky mode:   (res & 0x7fff) >> 0
+         * Or, simply:
+         * In any case mode: (res & 0x7fff) >> (8 * (is_compact ? 1 : 0)).
+         * On the other hand the compact 0/1 bit can be simply acquired
+         * by shifting res >> 15.
+         */
+        uint16_t is_compact_bit = res >> 15;
+        res = (res & 0x7fff) >> (is_compact_bit * 8);
 #ifndef NDEBUG
-	uint16_t simple = (tuple->data_offset_bsize_raw & 0x8000) ?
-			  (tuple->data_offset_bsize_raw >> 8) & 0x7f :
-			  tuple->data_offset_bsize_raw;
-	assert(res == simple);
+        uint16_t simple = (tuple->data_offset_bsize_raw & 0x8000) ?
+                          (tuple->data_offset_bsize_raw >> 8) & 0x7f :
+                          tuple->data_offset_bsize_raw;
+        assert(res == simple);
 #endif
-	return res;
+        return res;
 }
 
 /** Size of MessagePack data of the tuple. */
 static inline uint32_t
 tuple_bsize(struct tuple *tuple)
 {
-	if (tuple->data_offset_bsize_raw & 0x8000) {
-		return tuple->data_offset_bsize_raw & 0xff;
-	} else {
-		return tuple->bsize_bulky;
-	}
+        if (tuple->data_offset_bsize_raw & 0x8000) {
+                return tuple->data_offset_bsize_raw & 0xff;
+        } else {
+                return tuple->bsize_bulky;
+        }
 }
 
 /** Size of the tuple including size of struct tuple. */
 static inline size_t
 tuple_size(struct tuple *tuple)
 {
-	/* data_offset includes sizeof(struct tuple). */
-	return tuple_data_offset(tuple) + tuple_bsize(tuple);
+        /* data_offset includes sizeof(struct tuple). */
+        return tuple_data_offset(tuple) + tuple_bsize(tuple);
 }
 
 /**
@@ -538,7 +543,7 @@ tuple_size(struct tuple *tuple)
 static inline const char *
 tuple_data(struct tuple *tuple)
 {
-	return (const char *) tuple + tuple_data_offset(tuple);
+        return (const char *) tuple + tuple_data_offset(tuple);
 }
 
 /**
@@ -547,7 +552,7 @@ tuple_data(struct tuple *tuple)
 static inline const char *
 tuple_data_or_null(struct tuple *tuple)
 {
-	return tuple != NULL ? tuple_data(tuple) : NULL;
+        return tuple != NULL ? tuple_data(tuple) : NULL;
 }
 
 /**
@@ -559,8 +564,8 @@ tuple_data_or_null(struct tuple *tuple)
 static inline const char *
 tuple_data_range(struct tuple *tuple, uint32_t *p_size)
 {
-	*p_size = tuple_bsize(tuple);
-	return (const char *) tuple + tuple_data_offset(tuple);
+        *p_size = tuple_bsize(tuple);
+        return (const char *) tuple + tuple_data_offset(tuple);
 }
 
 /**
@@ -607,9 +612,9 @@ mp_str(const char *data);
 static inline struct tuple_format *
 tuple_format(struct tuple *tuple)
 {
-	struct tuple_format *format = tuple_format_by_id(tuple->format_id);
-	assert(tuple_format_id(format) == tuple->format_id);
-	return format;
+        struct tuple_format *format = tuple_format_by_id(tuple->format_id);
+        assert(tuple_format_id(format) == tuple->format_id);
+        return format;
 }
 
 /**
@@ -626,7 +631,7 @@ tuple_format(struct tuple *tuple)
 static inline struct tuple *
 tuple_new(struct tuple_format *format, const char *data, const char *end)
 {
-	return format->vtab.tuple_new(format, data, end);
+        return format->vtab.tuple_new(format, data, end);
 }
 
 /**
@@ -636,27 +641,27 @@ tuple_new(struct tuple_format *format, const char *data, const char *end)
 static inline void
 tuple_delete(struct tuple *tuple)
 {
-	say_debug("%s(%p)", __func__, tuple);
-	assert(tuple->local_refs == 0);
-	assert(!tuple->has_uploaded_refs);
-	assert(!tuple->is_dirty);
-	struct tuple_format *format = tuple_format(tuple);
-	format->vtab.tuple_delete(format, tuple);
+        say_debug("%s(%p)", __func__, tuple);
+        assert(tuple->local_refs == 0);
+        assert(!tuple->has_uploaded_refs);
+        assert(!tuple->is_dirty);
+        struct tuple_format *format = tuple_format(tuple);
+        format->vtab.tuple_delete(format, tuple);
 }
 
 /** Tuple chunk memory object. */
 struct tuple_chunk {
-	/** The payload size. Needed to perform memory release.*/
-	uint32_t data_sz;
-	/** Metadata object payload. */
-	char data[0];
+        /** The payload size. Needed to perform memory release.*/
+        uint32_t data_sz;
+        /** Metadata object payload. */
+        char data[0];
 };
 
 /** Calculate the size of tuple_chunk object by given data_sz. */
 static inline uint32_t
 tuple_chunk_sz(uint32_t data_sz)
 {
-	return sizeof(struct tuple_chunk) + data_sz;
+        return sizeof(struct tuple_chunk) + data_sz;
 }
 
 /**
@@ -666,16 +671,16 @@ tuple_chunk_sz(uint32_t data_sz)
 static inline const char *
 tuple_chunk_new(struct tuple *tuple, const char *data, uint32_t data_sz)
 {
-	struct tuple_format *format = tuple_format(tuple);
-	return format->vtab.tuple_chunk_new(format, tuple, data, data_sz);
+        struct tuple_format *format = tuple_format(tuple);
+        return format->vtab.tuple_chunk_new(format, tuple, data, data_sz);
 }
 
 /** Free a tuple_chunk allocated for given tuple and data. */
 static inline void
 tuple_chunk_delete(struct tuple *tuple, const char *data)
 {
-	struct tuple_format *format = tuple_format(tuple);
-	format->vtab.tuple_chunk_delete(format, data);
+        struct tuple_format *format = tuple_format(tuple);
+        format->vtab.tuple_chunk_delete(format, data);
 }
 
 /**
@@ -703,7 +708,7 @@ tuple_validate_raw(struct tuple_format *format, const char *data);
 static inline int
 tuple_validate(struct tuple_format *format, struct tuple *tuple)
 {
-	return tuple_validate_raw(format, tuple_data(tuple));
+        return tuple_validate_raw(format, tuple_data(tuple));
 }
 
 /*
@@ -715,7 +720,7 @@ tuple_validate(struct tuple_format *format, struct tuple *tuple)
 static inline const uint32_t *
 tuple_field_map(struct tuple *tuple)
 {
-	return (const uint32_t *) tuple_data(tuple);
+        return (const uint32_t *) tuple_data(tuple);
 }
 
 /**
@@ -726,8 +731,8 @@ tuple_field_map(struct tuple *tuple)
 static inline uint32_t
 tuple_field_count(struct tuple *tuple)
 {
-	const char *data = tuple_data(tuple);
-	return mp_decode_array(&data);
+        const char *data = tuple_data(tuple);
+        return mp_decode_array(&data);
 }
 
 /**
@@ -746,7 +751,7 @@ tuple_field_count(struct tuple *tuple)
  */
 int
 tuple_go_to_path(const char **data, const char *path, uint32_t path_len,
-		 int multikey_idx);
+                 int multikey_idx);
 
 /**
  * Propagate @a field to MessagePack(field)[index].
@@ -792,74 +797,74 @@ tuple_field_go_to_key(const char **field, const char *key, int len);
  */
 static inline const char *
 tuple_field_raw_by_path(struct tuple_format *format, const char *tuple,
-			const uint32_t *field_map, uint32_t fieldno,
-			const char *path, uint32_t path_len,
-			int32_t *offset_slot_hint, int multikey_idx)
+                        const uint32_t *field_map, uint32_t fieldno,
+                        const char *path, uint32_t path_len,
+                        int32_t *offset_slot_hint, int multikey_idx)
 {
-	int32_t offset_slot;
-	if (offset_slot_hint != NULL &&
-	    *offset_slot_hint != TUPLE_OFFSET_SLOT_NIL) {
-		offset_slot = *offset_slot_hint;
-		goto offset_slot_access;
-	}
-	if (likely(fieldno < format->index_field_count)) {
-		uint32_t offset;
-		struct tuple_field *field;
-		if (path == NULL && fieldno == 0) {
-			mp_decode_array(&tuple);
-			return tuple;
-		}
-		field = tuple_format_field_by_path(format, fieldno, path,
-						   path_len);
-		assert(field != NULL || path != NULL);
-		if (path != NULL && field == NULL)
-			goto parse;
-		offset_slot = field->offset_slot;
-		if (offset_slot == TUPLE_OFFSET_SLOT_NIL)
-			goto parse;
-		if (offset_slot_hint != NULL) {
-			*offset_slot_hint = offset_slot;
-			/*
-			 * Hint is never requested for a multikey field without
-			 * providing a concrete multikey index.
-			 */
-			assert(!field->is_multikey_part ||
-			       multikey_idx != MULTIKEY_NONE);
-		} else if (field->is_multikey_part &&
-			   multikey_idx == MULTIKEY_NONE) {
-			/*
-			 * When the field is multikey, the offset slot points
-			 * not at the data. It points at 'extra' array of
-			 * offsets for this multikey index. That array can only
-			 * be accessed if index in that array is known. It is
-			 * not known when the field is accessed not in an index.
-			 * For example, in an application's Lua code by a JSON
-			 * path.
-			 */
-			goto parse;
-		}
+        int32_t offset_slot;
+        if (offset_slot_hint != NULL &&
+            *offset_slot_hint != TUPLE_OFFSET_SLOT_NIL) {
+                offset_slot = *offset_slot_hint;
+                goto offset_slot_access;
+        }
+        if (likely(fieldno < format->index_field_count)) {
+                uint32_t offset;
+                struct tuple_field *field;
+                if (path == NULL && fieldno == 0) {
+                        mp_decode_array(&tuple);
+                        return tuple;
+                }
+                field = tuple_format_field_by_path(format, fieldno, path,
+                                                   path_len);
+                assert(field != NULL || path != NULL);
+                if (path != NULL && field == NULL)
+                        goto parse;
+                offset_slot = field->offset_slot;
+                if (offset_slot == TUPLE_OFFSET_SLOT_NIL)
+                        goto parse;
+                if (offset_slot_hint != NULL) {
+                        *offset_slot_hint = offset_slot;
+                        /*
+                         * Hint is never requested for a multikey field without
+                         * providing a concrete multikey index.
+                         */
+                        assert(!field->is_multikey_part ||
+                               multikey_idx != MULTIKEY_NONE);
+                } else if (field->is_multikey_part &&
+                           multikey_idx == MULTIKEY_NONE) {
+                        /*
+                         * When the field is multikey, the offset slot points
+                         * not at the data. It points at 'extra' array of
+                         * offsets for this multikey index. That array can only
+                         * be accessed if index in that array is known. It is
+                         * not known when the field is accessed not in an index.
+                         * For example, in an application's Lua code by a JSON
+                         * path.
+                         */
+                        goto parse;
+                }
 offset_slot_access:
-		/* Indexed field */
-		offset = field_map_get_offset(field_map, offset_slot,
-					      multikey_idx);
-		if (offset == 0)
-			return NULL;
-		tuple += offset;
-	} else {
-		uint32_t field_count;
+                /* Indexed field */
+                offset = field_map_get_offset(field_map, offset_slot,
+                                              multikey_idx);
+                if (offset == 0)
+                        return NULL;
+                tuple += offset;
+        } else {
+                uint32_t field_count;
 parse:
-		ERROR_INJECT(ERRINJ_TUPLE_FIELD, return NULL);
-		field_count = mp_decode_array(&tuple);
-		if (unlikely(fieldno >= field_count))
-			return NULL;
-		for (uint32_t k = 0; k < fieldno; k++)
-			mp_next(&tuple);
-		if (path != NULL &&
-		    unlikely(tuple_go_to_path(&tuple, path, path_len,
-					      multikey_idx) != 0))
-			return NULL;
-	}
-	return tuple;
+                ERROR_INJECT(ERRINJ_TUPLE_FIELD, return NULL);
+                field_count = mp_decode_array(&tuple);
+                if (unlikely(fieldno >= field_count))
+                        return NULL;
+                for (uint32_t k = 0; k < fieldno; k++)
+                        mp_next(&tuple);
+                if (path != NULL &&
+                    unlikely(tuple_go_to_path(&tuple, path, path_len,
+                                              multikey_idx) != 0))
+                        return NULL;
+        }
+        return tuple;
 }
 
 /**
@@ -875,36 +880,36 @@ parse:
  */
 static inline const char *
 tuple_field_raw(struct tuple_format *format, const char *tuple,
-		const uint32_t *field_map, uint32_t field_no)
+                const uint32_t *field_map, uint32_t field_no)
 {
-	if (likely(field_no < format->index_field_count)) {
-		int32_t offset_slot;
-		uint32_t offset = 0;
-		struct tuple_field *field;
-		if (field_no == 0) {
-			mp_decode_array(&tuple);
-			return tuple;
-		}
-		struct json_token *token = format->fields.root.children[field_no];
-		field = json_tree_entry(token, struct tuple_field, token);
-		offset_slot = field->offset_slot;
-		if (offset_slot == TUPLE_OFFSET_SLOT_NIL)
-			goto parse;
-		offset = field_map_get_offset(field_map, offset_slot,
-					      MULTIKEY_NONE);
-		if (offset == 0)
-			return NULL;
-		tuple += offset;
-	} else {
+        if (likely(field_no < format->index_field_count)) {
+                int32_t offset_slot;
+                uint32_t offset = 0;
+                struct tuple_field *field;
+                if (field_no == 0) {
+                        mp_decode_array(&tuple);
+                        return tuple;
+                }
+                struct json_token *token = format->fields.root.children[field_no];
+                field = json_tree_entry(token, struct tuple_field, token);
+                offset_slot = field->offset_slot;
+                if (offset_slot == TUPLE_OFFSET_SLOT_NIL)
+                        goto parse;
+                offset = field_map_get_offset(field_map, offset_slot,
+                                              MULTIKEY_NONE);
+                if (offset == 0)
+                        return NULL;
+                tuple += offset;
+        } else {
 parse:
-		ERROR_INJECT(ERRINJ_TUPLE_FIELD, return NULL);
-		uint32_t field_count = mp_decode_array(&tuple);
-		if (unlikely(field_no >= field_count))
-			return NULL;
-		for ( ; field_no > 0; field_no--)
-			mp_next(&tuple);
-	}
-	return tuple;
+                ERROR_INJECT(ERRINJ_TUPLE_FIELD, return NULL);
+                uint32_t field_count = mp_decode_array(&tuple);
+                if (unlikely(field_no >= field_count))
+                        return NULL;
+                for ( ; field_no > 0; field_no--)
+                        mp_next(&tuple);
+        }
+        return tuple;
 }
 
 /**
@@ -918,8 +923,8 @@ parse:
 static inline const char *
 tuple_field(struct tuple *tuple, uint32_t fieldno)
 {
-	return tuple_field_raw(tuple_format(tuple), tuple_data(tuple),
-			       tuple_field_map(tuple), fieldno);
+        return tuple_field_raw(tuple_format(tuple), tuple_data(tuple),
+                               tuple_field_map(tuple), fieldno);
 }
 
 /**
@@ -939,8 +944,8 @@ tuple_field(struct tuple *tuple, uint32_t fieldno)
  */
 const char *
 tuple_field_raw_by_full_path(struct tuple_format *format, const char *tuple,
-			     const uint32_t *field_map, const char *path,
-			     uint32_t path_len, uint32_t path_hash);
+                             const uint32_t *field_map, const char *path,
+                             uint32_t path_len, uint32_t path_hash);
 
 /**
  * Get a tuple field pointed to by an index part and multikey
@@ -954,21 +959,21 @@ tuple_field_raw_by_full_path(struct tuple_format *format, const char *tuple,
  */
 static inline const char *
 tuple_field_raw_by_part(struct tuple_format *format, const char *data,
-			const uint32_t *field_map,
-			struct key_part *part, int multikey_idx)
+                        const uint32_t *field_map,
+                        struct key_part *part, int multikey_idx)
 {
-	if (unlikely(part->format_epoch != format->epoch)) {
-		assert(format->epoch != 0);
-		part->format_epoch = format->epoch;
-		/*
-		 * Clear the offset slot cache, since it's stale.
-		 * The cache will be reset by the lookup.
-		 */
-		part->offset_slot_cache = TUPLE_OFFSET_SLOT_NIL;
-	}
-	return tuple_field_raw_by_path(format, data, field_map, part->fieldno,
-				       part->path, part->path_len,
-				       &part->offset_slot_cache, multikey_idx);
+        if (unlikely(part->format_epoch != format->epoch)) {
+                assert(format->epoch != 0);
+                part->format_epoch = format->epoch;
+                /*
+                 * Clear the offset slot cache, since it's stale.
+                 * The cache will be reset by the lookup.
+                 */
+                part->offset_slot_cache = TUPLE_OFFSET_SLOT_NIL;
+        }
+        return tuple_field_raw_by_path(format, data, field_map, part->fieldno,
+                                       part->path, part->path_len,
+                                       &part->offset_slot_cache, multikey_idx);
 }
 
 /**
@@ -980,11 +985,11 @@ tuple_field_raw_by_part(struct tuple_format *format, const char *data,
  */
 static inline const char *
 tuple_field_by_part(struct tuple *tuple, struct key_part *part,
-		    int multikey_idx)
+                    int multikey_idx)
 {
-	return tuple_field_raw_by_part(tuple_format(tuple), tuple_data(tuple),
-				       tuple_field_map(tuple), part,
-				       multikey_idx);
+        return tuple_field_raw_by_part(tuple_format(tuple), tuple_data(tuple),
+                                       tuple_field_map(tuple), part,
+                                       multikey_idx);
 }
 
 /**
@@ -998,7 +1003,7 @@ tuple_field_by_part(struct tuple *tuple, struct key_part *part,
  */
 uint32_t
 tuple_raw_multikey_count(struct tuple_format *format, const char *data,
-			 const uint32_t *field_map, struct key_def *key_def);
+                         const uint32_t *field_map, struct key_def *key_def);
 
 /**
  * Get count of multikey index keys in tuple by given multikey
@@ -1010,24 +1015,24 @@ tuple_raw_multikey_count(struct tuple_format *format, const char *data,
 static inline uint32_t
 tuple_multikey_count(struct tuple *tuple, struct key_def *key_def)
 {
-	return tuple_raw_multikey_count(tuple_format(tuple), tuple_data(tuple),
-					tuple_field_map(tuple), key_def);
+        return tuple_raw_multikey_count(tuple_format(tuple), tuple_data(tuple),
+                                        tuple_field_map(tuple), key_def);
 }
 
 /**
  * @brief Tuple Interator
  */
 struct tuple_iterator {
-	/** @cond false **/
-	/* State */
-	struct tuple *tuple;
-	/** Always points to the beginning of the next field. */
-	const char *pos;
-	/** End of the tuple. */
-	const char *end;
-	/** @endcond **/
-	/** field no of the next field. */
-	int fieldno;
+        /** @cond false **/
+        /* State */
+        struct tuple *tuple;
+        /** Always points to the beginning of the next field. */
+        const char *pos;
+        /** End of the tuple. */
+        const char *end;
+        /** @endcond **/
+        /** field no of the next field. */
+        int fieldno;
 };
 
 /**
@@ -1040,7 +1045,7 @@ struct tuple_iterator {
  * const char *field;
  * uint32_t len;
  * while ((field = tuple_next(&it, &len)))
- *	lua_pushlstring(L, field, len);
+ *      lua_pushlstring(L, field, len);
  *
  * @endcode
  *
@@ -1050,13 +1055,13 @@ struct tuple_iterator {
 static inline void
 tuple_rewind(struct tuple_iterator *it, struct tuple *tuple)
 {
-	it->tuple = tuple;
-	uint32_t bsize;
-	const char *data = tuple_data_range(tuple, &bsize);
-	it->pos = data;
-	(void) mp_decode_array(&it->pos); /* Skip array header */
-	it->fieldno = 0;
-	it->end = data + bsize;
+        it->tuple = tuple;
+        uint32_t bsize;
+        const char *data = tuple_data_range(tuple, &bsize);
+        it->pos = data;
+        (void) mp_decode_array(&it->pos); /* Skip array header */
+        it->fieldno = 0;
+        it->end = data + bsize;
 }
 
 /**
@@ -1080,51 +1085,51 @@ tuple_next(struct tuple_iterator *it);
 static inline const char *
 tuple_next_with_type(struct tuple_iterator *it, enum mp_type type)
 {
-	uint32_t fieldno = it->fieldno;
-	const char *field = tuple_next(it);
-	if (field == NULL) {
-		diag_set(ClientError, ER_NO_SUCH_FIELD_NO, it->fieldno);
-		return NULL;
-	}
-	enum mp_type actual_type = mp_typeof(*field);
-	if (actual_type != type) {
-		diag_set(ClientError, ER_FIELD_TYPE,
-			 int2str(fieldno + TUPLE_INDEX_BASE),
-			 mp_type_strs[type], mp_type_strs[actual_type]);
-		return NULL;
-	}
-	return field;
+        uint32_t fieldno = it->fieldno;
+        const char *field = tuple_next(it);
+        if (field == NULL) {
+                diag_set(ClientError, ER_NO_SUCH_FIELD_NO, it->fieldno);
+                return NULL;
+        }
+        enum mp_type actual_type = mp_typeof(*field);
+        if (actual_type != type) {
+                diag_set(ClientError, ER_FIELD_TYPE,
+                         int2str(fieldno + TUPLE_INDEX_BASE),
+                         mp_type_strs[type], mp_type_strs[actual_type]);
+                return NULL;
+        }
+        return field;
 }
 
 /** Get next field from iterator as uint32_t. */
 static inline int
 tuple_next_u32(struct tuple_iterator *it, uint32_t *out)
 {
-	uint32_t fieldno = it->fieldno;
-	const char *field = tuple_next_with_type(it, MP_UINT);
-	if (field == NULL)
-		return -1;
-	uint64_t val = mp_decode_uint(&field);
-	*out = val;
-	if (val > UINT32_MAX) {
-		diag_set(ClientError, ER_FIELD_TYPE,
-			 int2str(fieldno + TUPLE_INDEX_BASE),
-			 "uint32_t",
-			 "uint64_t");
-		return -1;
-	}
-	return 0;
+        uint32_t fieldno = it->fieldno;
+        const char *field = tuple_next_with_type(it, MP_UINT);
+        if (field == NULL)
+                return -1;
+        uint64_t val = mp_decode_uint(&field);
+        *out = val;
+        if (val > UINT32_MAX) {
+                diag_set(ClientError, ER_FIELD_TYPE,
+                         int2str(fieldno + TUPLE_INDEX_BASE),
+                         "uint32_t",
+                         "uint64_t");
+                return -1;
+        }
+        return 0;
 }
 
 /** Get next field from iterator as uint64_t. */
 static inline int
 tuple_next_u64(struct tuple_iterator *it, uint64_t *out)
 {
-	const char *field = tuple_next_with_type(it, MP_UINT);
-	if (field == NULL)
-		return -1;
-	*out = mp_decode_uint(&field);
-	return 0;
+        const char *field = tuple_next_with_type(it, MP_UINT);
+        if (field == NULL)
+                return -1;
+        *out = mp_decode_uint(&field);
+        return 0;
 }
 
 /**
@@ -1135,32 +1140,32 @@ tuple_next_u64(struct tuple_iterator *it, uint64_t *out)
 static inline void
 mp_tuple_assert(const char *tuple, const char *tuple_end)
 {
-	assert(mp_typeof(*tuple) == MP_ARRAY);
+        assert(mp_typeof(*tuple) == MP_ARRAY);
 #ifndef NDEBUG
-	mp_next(&tuple);
+        mp_next(&tuple);
 #endif
-	assert(tuple == tuple_end);
-	(void) tuple;
-	(void) tuple_end;
+        assert(tuple == tuple_end);
+        (void) tuple;
+        (void) tuple_end;
 }
 
 static inline const char *
 tuple_field_with_type(struct tuple *tuple, uint32_t fieldno, enum mp_type type)
 {
-	const char *field = tuple_field(tuple, fieldno);
-	if (field == NULL) {
-		diag_set(ClientError, ER_NO_SUCH_FIELD_NO,
-			 fieldno + TUPLE_INDEX_BASE);
-		return NULL;
-	}
-	enum mp_type actual_type = mp_typeof(*field);
-	if (actual_type != type) {
-		diag_set(ClientError, ER_FIELD_TYPE,
-			 int2str(fieldno + TUPLE_INDEX_BASE),
-			 mp_type_strs[type], mp_type_strs[actual_type]);
-		return NULL;
-	}
-	return field;
+        const char *field = tuple_field(tuple, fieldno);
+        if (field == NULL) {
+                diag_set(ClientError, ER_NO_SUCH_FIELD_NO,
+                         fieldno + TUPLE_INDEX_BASE);
+                return NULL;
+        }
+        enum mp_type actual_type = mp_typeof(*field);
+        if (actual_type != type) {
+                diag_set(ClientError, ER_FIELD_TYPE,
+                         int2str(fieldno + TUPLE_INDEX_BASE),
+                         mp_type_strs[type], mp_type_strs[actual_type]);
+                return NULL;
+        }
+        return field;
 }
 
 /**
@@ -1170,11 +1175,11 @@ tuple_field_with_type(struct tuple *tuple, uint32_t fieldno, enum mp_type type)
 static inline int
 tuple_field_bool(struct tuple *tuple, uint32_t fieldno, bool *out)
 {
-	const char *field = tuple_field_with_type(tuple, fieldno, MP_BOOL);
-	if (field == NULL)
-		return -1;
-	*out = mp_decode_bool(&field);
-	return 0;
+        const char *field = tuple_field_with_type(tuple, fieldno, MP_BOOL);
+        if (field == NULL)
+                return -1;
+        *out = mp_decode_bool(&field);
+        return 0;
 }
 
 /**
@@ -1184,32 +1189,32 @@ tuple_field_bool(struct tuple *tuple, uint32_t fieldno, bool *out)
 static inline int
 tuple_field_i64(struct tuple *tuple, uint32_t fieldno, int64_t *out)
 {
-	const char *field = tuple_field(tuple, fieldno);
-	if (field == NULL) {
-		diag_set(ClientError, ER_NO_SUCH_FIELD_NO, fieldno);
-		return -1;
-	}
-	uint64_t val;
-	enum mp_type actual_type = mp_typeof(*field);
-	switch (actual_type) {
-	case MP_INT:
-		*out = mp_decode_int(&field);
-		break;
-	case MP_UINT:
-		val = mp_decode_uint(&field);
-		if (val <= INT64_MAX) {
-			*out = val;
-			break;
-		}
-		FALLTHROUGH;
-	default:
-		diag_set(ClientError, ER_FIELD_TYPE,
-			 int2str(fieldno + TUPLE_INDEX_BASE),
-			 field_type_strs[FIELD_TYPE_INTEGER],
-			 mp_type_strs[actual_type]);
-		return -1;
-	}
-	return 0;
+        const char *field = tuple_field(tuple, fieldno);
+        if (field == NULL) {
+                diag_set(ClientError, ER_NO_SUCH_FIELD_NO, fieldno);
+                return -1;
+        }
+        uint64_t val;
+        enum mp_type actual_type = mp_typeof(*field);
+        switch (actual_type) {
+        case MP_INT:
+                *out = mp_decode_int(&field);
+                break;
+        case MP_UINT:
+                val = mp_decode_uint(&field);
+                if (val <= INT64_MAX) {
+                        *out = val;
+                        break;
+                }
+                FALLTHROUGH;
+        default:
+                diag_set(ClientError, ER_FIELD_TYPE,
+                         int2str(fieldno + TUPLE_INDEX_BASE),
+                         field_type_strs[FIELD_TYPE_INTEGER],
+                         mp_type_strs[actual_type]);
+                return -1;
+        }
+        return 0;
 }
 
 /**
@@ -1219,11 +1224,11 @@ tuple_field_i64(struct tuple *tuple, uint32_t fieldno, int64_t *out)
 static inline int
 tuple_field_u64(struct tuple *tuple, uint32_t fieldno, uint64_t *out)
 {
-	const char *field = tuple_field_with_type(tuple, fieldno, MP_UINT);
-	if (field == NULL)
-		return -1;
-	*out = mp_decode_uint(&field);
-	return 0;
+        const char *field = tuple_field_with_type(tuple, fieldno, MP_UINT);
+        if (field == NULL)
+                return -1;
+        *out = mp_decode_uint(&field);
+        return 0;
 }
 
 /**
@@ -1233,18 +1238,18 @@ tuple_field_u64(struct tuple *tuple, uint32_t fieldno, uint64_t *out)
 static inline int
 tuple_field_u32(struct tuple *tuple, uint32_t fieldno, uint32_t *out)
 {
-	const char *field = tuple_field_with_type(tuple, fieldno, MP_UINT);
-	if (field == NULL)
-		return -1;
-	uint64_t val = mp_decode_uint(&field);
-	*out = val;
-	if (val > UINT32_MAX) {
-		diag_set(ClientError, ER_FIELD_TYPE,
-			 int2str(fieldno + TUPLE_INDEX_BASE),
-			 "uint32_t", "uint64_t");
-		return -1;
-	}
-	return 0;
+        const char *field = tuple_field_with_type(tuple, fieldno, MP_UINT);
+        if (field == NULL)
+                return -1;
+        uint64_t val = mp_decode_uint(&field);
+        *out = val;
+        if (val > UINT32_MAX) {
+                diag_set(ClientError, ER_FIELD_TYPE,
+                         int2str(fieldno + TUPLE_INDEX_BASE),
+                         "uint32_t", "uint64_t");
+                return -1;
+        }
+        return 0;
 }
 
 /**
@@ -1254,10 +1259,10 @@ tuple_field_u32(struct tuple *tuple, uint32_t fieldno, uint32_t *out)
 static inline const char *
 tuple_field_str(struct tuple *tuple, uint32_t fieldno, uint32_t *len)
 {
-	const char *field = tuple_field_with_type(tuple, fieldno, MP_STR);
-	if (field == NULL)
-		return NULL;
-	return mp_decode_str(&field, len);
+        const char *field = tuple_field_with_type(tuple, fieldno, MP_STR);
+        if (field == NULL)
+                return NULL;
+        return mp_decode_str(&field, len);
 }
 
 /**
@@ -1267,11 +1272,11 @@ tuple_field_str(struct tuple *tuple, uint32_t fieldno, uint32_t *len)
 static inline const char *
 tuple_field_cstr(struct tuple *tuple, uint32_t fieldno)
 {
-	uint32_t len;
-	const char *str = tuple_field_str(tuple, fieldno, &len);
-	if (str == NULL)
-		return NULL;
-	return tt_cstr(str, len);
+        uint32_t len;
+        const char *str = tuple_field_str(tuple, fieldno, &len);
+        if (str == NULL)
+                return NULL;
+        return tt_cstr(str, len);
 }
 
 /**
@@ -1281,12 +1286,12 @@ tuple_field_cstr(struct tuple *tuple, uint32_t fieldno)
 static inline int
 tuple_field_uuid(struct tuple *tuple, int fieldno, struct tt_uuid *out)
 {
-	const char *value = tuple_field_cstr(tuple, fieldno);
-	if (value == NULL || tt_uuid_from_string(value, out) != 0) {
-		diag_set(ClientError, ER_INVALID_UUID, value);
-		return -1;
-	}
-	return 0;
+        const char *value = tuple_field_cstr(tuple, fieldno);
+        if (value == NULL || tt_uuid_from_string(value, out) != 0) {
+                diag_set(ClientError, ER_INVALID_UUID, value);
+                return -1;
+        }
+        return 0;
 }
 
 /**
@@ -1311,9 +1316,9 @@ tuple_acquire_refs(struct tuple *tuple);
 static inline void
 tuple_ref(struct tuple *tuple)
 {
-	if (unlikely(tuple->local_refs >= TUPLE_LOCAL_REF_MAX))
-		tuple_upload_refs(tuple);
-	tuple->local_refs++;
+        if (unlikely(tuple->local_refs >= TUPLE_LOCAL_REF_MAX))
+                tuple_upload_refs(tuple);
+        tuple->local_refs++;
 }
 
 /**
@@ -1324,13 +1329,13 @@ tuple_ref(struct tuple *tuple)
 static inline void
 tuple_unref(struct tuple *tuple)
 {
-	assert(tuple->local_refs >= 1);
-	if (--tuple->local_refs == 0) {
-		if (unlikely(tuple->has_uploaded_refs))
-			tuple_acquire_refs(tuple);
-		else
-			tuple_delete(tuple);
-	}
+        assert(tuple->local_refs >= 1);
+        if (--tuple->local_refs == 0) {
+                if (unlikely(tuple->has_uploaded_refs))
+                        tuple_acquire_refs(tuple);
+                else
+                        tuple_delete(tuple);
+        }
 }
 
 /**
@@ -1350,14 +1355,14 @@ extern struct tuple *box_tuple_last;
 static inline box_tuple_t *
 tuple_bless(struct tuple *tuple)
 {
-	assert(tuple != NULL);
-	tuple_ref(tuple);
-	/* Remove previous tuple */
-	if (likely(box_tuple_last != NULL))
-		tuple_unref(box_tuple_last);
-	/* Remember current tuple */
-	box_tuple_last = tuple;
-	return tuple;
+        assert(tuple != NULL);
+        tuple_ref(tuple);
+        /* Remove previous tuple */
+        if (likely(box_tuple_last != NULL))
+                tuple_unref(box_tuple_last);
+        /* Remember current tuple */
+        box_tuple_last = tuple;
+        return tuple;
 }
 
 /**
@@ -1376,10 +1381,10 @@ tuple_to_buf(struct tuple *tuple, char *buf, size_t size);
 static inline uint32_t
 tuple_field_u32_xc(struct tuple *tuple, uint32_t fieldno)
 {
-	uint32_t out;
-	if (tuple_field_u32(tuple, fieldno, &out) != 0)
-		diag_raise();
-	return out;
+        uint32_t out;
+        if (tuple_field_u32(tuple, fieldno, &out) != 0)
+                diag_raise();
+        return out;
 }
 
 #endif /* defined(__cplusplus) */

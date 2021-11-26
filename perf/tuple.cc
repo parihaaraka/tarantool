@@ -1,33 +1,27 @@
-#include "memory.h"
-#include "fiber.h"
-#include "tuple.h"
+#include "helpers.h"
+
 #include "memtx_engine.h"
 #include <allocator.h>
 
-#include <iostream>
 #include <benchmark/benchmark.h>
 
 const size_t NUM_TEST_TUPLES = 4096;
-const size_t MAX_TUPLE_DATA_SIZE = 512;
+const size_t TUPLE_DATA_SIZE = 512;
+const TupleFormat &format = TupleFormat::default_format<4>();
 
 // Class that creates and destroys tuple format for private memtx engine.
 class MemtxEngine {
 public:
-	static MemtxEngine &instance()
+	static MemtxEngine &instance(const TupleFormat &format)
 	{
-		static MemtxEngine instance;
+		static MemtxEngine instance(format);
 		return instance;
 	}
-	struct tuple_format *format() { return fmt; }
-	struct key_def *key_def() { return kd; }
+	const struct tuple_format *format() const { return fmt.format(); }
+	const struct key_def *key_def() const { return fmt.key_def(); }
 private:
-	MemtxEngine()
+	MemtxEngine(const TupleFormat &format): fmt(format)
 	{
-		memory_init();
-		fiber_init(fiber_c_invoke);
-		region_alloc(&fiber()->gc, 4);
-		tuple_init(NULL);
-
 		memset(&memtx, 0, sizeof(memtx));
 
 		quota_init(&memtx.quota, QUOTA_MAX);
@@ -50,108 +44,16 @@ private:
 		memtx_set_tuple_format_vtab("small");
 
 		memtx.max_tuple_size = 1024 * 1024;
-
-		struct key_part_def kdp{0};
-		kdp.fieldno = 4;
-		kdp.type = FIELD_TYPE_UNSIGNED;
-		kd = key_def_new(&kdp, 1, false);
-		fmt = tuple_format_new(&memtx_tuple_format_vtab, &memtx, &kd, 1,
-					  NULL, 0, 0, NULL, false, false, NULL);
-		tuple_format_ref(fmt);
 	}
 	~MemtxEngine()
 	{
-		key_def_delete(kd);
-		tuple_format_unref(fmt);
 		SmallAlloc::destroy();
 		slab_cache_destroy(&memtx.slab_cache);
 		tuple_arena_destroy(&memtx.arena);
-		box_tuple_last = NULL;
-		tuple_free();
-		fiber_free();
-		memory_free();
 	}
 
 	struct memtx_engine memtx;
-	struct key_def *kd;
-	struct tuple_format *fmt;
-};
-
-// Generator of random msgpack array.
-class MpData {
-public:
-	const char *begin() const { return data; }
-	const char *end() const { return data_end; }
-	MpData()
-	{
-		uint64_t r1 = (uint64_t)rand() * 1024 + rand();
-		uint64_t r2 = (uint64_t)rand() * 1024 + rand();
-		uint64_t r3 = (uint64_t)rand() * 1024 + rand();
-		const size_t common_size = 12 + mp_sizeof_uint(r1) +
-			mp_sizeof_uint(r2) + mp_sizeof_uint(r3);
-		size_t add_bytes = rand() % (MAX_TUPLE_DATA_SIZE - common_size);
-		size_t add_nums = add_bytes / 5;
-
-		data_end = data;
-		data_end = mp_encode_array(data_end, 5 + add_nums);
-		data_end = mp_encode_uint(data_end, r1);
-		data_end = mp_encode_str(data_end, "hello", 5);
-		data_end = mp_encode_nil(data_end);
-		data_end = mp_encode_uint(data_end, r2);
-		data_end = mp_encode_uint(data_end, r3);
-		if (data_end - data > common_size)
-			abort();
-		for (size_t i = 0; i < add_nums; i++)
-			data_end = mp_encode_uint(data_end, 0xFFFFFF);
-		if (data_end - data > MAX_TUPLE_DATA_SIZE)
-			abort();
-	}
-private:
-	char data[MAX_TUPLE_DATA_SIZE];
-	char *data_end;
-};
-
-// Generator of set of random msgpack arrays.
-class MpDataSet {
-public:
-	static MpDataSet &instance()
-	{
-		static MpDataSet instance;
-		return instance;
-	}
-	const MpData &operator[](size_t i) const { return data[i]; }
-private:
-	MpData data[NUM_TEST_TUPLES];
-};
-
-// Generator of a set of random tuples.
-class TestTuples {
-public:
-	TestTuples()
-	{
-		format = MemtxEngine::instance().format();
-		tuple_format_ref(format);
-		MpDataSet &dataset = MpDataSet::instance();
-
-		for (size_t i = 0; i < NUM_TEST_TUPLES; i++) {
-			data[i] = box_tuple_new(format,
-						dataset[i].begin(),
-						dataset[i].end());
-			tuple_ref(data[i]);
-		}
-	}
-	~TestTuples()
-	{
-		for (size_t i = 0; i < NUM_TEST_TUPLES; i++)
-			tuple_unref(data[i]);
-
-		tuple_format_unref(format);
-	}
-	struct tuple *operator[](size_t i) { return data[i]; }
-
-private:
-	struct tuple_format *format;
-	struct tuple *data[NUM_TEST_TUPLES];
+	const TupleFormat &fmt;
 };
 
 // box_tuple_new benchmark.
@@ -159,9 +61,10 @@ static void
 bench_tuple_new(benchmark::State& state)
 {
 	size_t total_count = 0;
-
-	struct tuple_format *format = MemtxEngine::instance().format();
-	MpDataSet &dataset = MpDataSet::instance();
+	struct tuple_format *fmt = const_cast<struct tuple_format *>
+		(MemtxEngine::instance(format).format());
+	MpDataSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		dataset(format, MP_DATA_TYPE_UNSIGNED);
 	struct tuple *tuples[NUM_TEST_TUPLES];
 	size_t i = 0;
 
@@ -174,7 +77,7 @@ bench_tuple_new(benchmark::State& state)
 			i = 0;
 			state.ResumeTiming();
 		}
-		tuples[i] = box_tuple_new(format,
+		tuples[i] = box_tuple_new(fmt,
 					  dataset[i].begin(),
 					  dataset[i].end());
 		tuple_ref(tuples[i]);
@@ -183,7 +86,7 @@ bench_tuple_new(benchmark::State& state)
 	total_count += i;
 	state.SetItemsProcessed(total_count);
 
-	for (size_t k = i; NUM_TEST_TUPLES < i; k++)
+	for (size_t k = 0; k < i; k++)
 		tuple_unref(tuples[k]);
 }
 
@@ -194,9 +97,10 @@ static void
 bench_tuple_delete(benchmark::State& state)
 {
 	size_t total_count = 0;
-
-	struct tuple_format *format = MemtxEngine::instance().format();
-	MpDataSet &dataset = MpDataSet::instance();
+	struct tuple_format *fmt = const_cast<struct tuple_format *>
+		(MemtxEngine::instance(format).format());
+	MpDataSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		dataset(format, MP_DATA_TYPE_UNSIGNED);
 	struct tuple *tuples[NUM_TEST_TUPLES];
 
 	size_t i = NUM_TEST_TUPLES;
@@ -205,7 +109,7 @@ bench_tuple_delete(benchmark::State& state)
 			total_count += i;
 			state.PauseTiming();
 			for (size_t k = 0; k < NUM_TEST_TUPLES; k++) {
-				tuples[k] = box_tuple_new(format,
+				tuples[k] = box_tuple_new(fmt,
 							  dataset[k].begin(),
 							  dataset[k].end());
 				tuple_ref(tuples[k]);
@@ -227,7 +131,8 @@ BENCHMARK(bench_tuple_delete);
 static void
 bench_tuple_ref_unref_low(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t total_count = 0;
 	const size_t NUM_REFS = 32;
 	for (auto _ : state) {
@@ -247,7 +152,8 @@ BENCHMARK(bench_tuple_ref_unref_low);
 static void
 bench_tuple_ref_unref_high(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t total_count = 0;
 	const size_t NUM_REFS = 1024;
 	for (auto _ : state) {
@@ -268,7 +174,8 @@ BENCHMARK(bench_tuple_ref_unref_high);
 static void
 tuple_access_members(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t total_count = 0;
 	for (auto _ : state) {
@@ -290,7 +197,8 @@ BENCHMARK(tuple_access_members);
 static void
 tuple_access_data(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t total_count = 0;
 	for (auto _ : state) {
@@ -311,7 +219,8 @@ BENCHMARK(tuple_access_data);
 static void
 tuple_access_data_range(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t total_count = 0;
 	for (auto _ : state) {
@@ -334,7 +243,8 @@ BENCHMARK(tuple_access_data_range);
 static void
 tuple_access_unindexed_field(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t total_count = 0;
 	for (auto _ : state) {
@@ -355,7 +265,8 @@ BENCHMARK(tuple_access_unindexed_field);
 static void
 tuple_access_indexed_field(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t total_count = 0;
 	for (auto _ : state) {
@@ -377,10 +288,12 @@ BENCHMARK(tuple_access_indexed_field);
 static void
 tuple_tuple_compare(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t j = 0;
-	struct key_def *kd = MemtxEngine::instance().key_def();
+	struct key_def *kd = const_cast<struct key_def *>
+		(MemtxEngine::instance(format).key_def());
 	size_t total_count = 0;
 	for (auto _ : state) {
 		if (i == NUM_TEST_TUPLES) {
@@ -405,10 +318,12 @@ BENCHMARK(tuple_tuple_compare);
 static void
 tuple_tuple_compare_hint(benchmark::State& state)
 {
-	TestTuples tuples;
+	TupleSet<NUM_TEST_TUPLES, TUPLE_DATA_SIZE>
+		tuples(format, TupleCompressor(), MP_DATA_TYPE_UNSIGNED);
 	size_t i = 0;
 	size_t j = 0;
-	struct key_def *kd = MemtxEngine::instance().key_def();
+	struct key_def *kd = const_cast<struct key_def *>
+		(MemtxEngine::instance(format).key_def());
 	size_t total_count = 0;
 	for (auto _ : state) {
 		if (i == NUM_TEST_TUPLES) {
@@ -432,25 +347,3 @@ tuple_tuple_compare_hint(benchmark::State& state)
 BENCHMARK(tuple_tuple_compare_hint);
 
 BENCHMARK_MAIN();
-
-static void
-show_warning_if_debug()
-{
-#ifndef NDEBUG
-	std::cerr << "#######################################################\n"
-		  << "#######################################################\n"
-		  << "#######################################################\n"
-		  << "###                                                 ###\n"
-		  << "###                    WARNING!                     ###\n"
-		  << "###   The performance test is run in debug build!   ###\n"
-		  << "###   Test results are definitely inappropriate!    ###\n"
-		  << "###                                                 ###\n"
-		  << "#######################################################\n"
-		  << "#######################################################\n"
-		  << "#######################################################\n";
-#endif // #ifndef NDEBUG
-}
-
-struct DebugWarning {
-	DebugWarning() { show_warning_if_debug(); }
-} debug_warning;

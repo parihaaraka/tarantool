@@ -41,7 +41,7 @@ void
 tuple_compression_buffer_alloc(size_t size)
 {
         size = ZSTD_compressBound(size);
-        if (size < =compression_buffer_size)
+        if (size <= compression_buffer_size)
                 return;
         free(tmp_compression_beffer);
         free(compression_buffer);
@@ -59,6 +59,7 @@ try_to_compress_tuple_data(struct space *space, const char *data,
         (void)data;
         (void)end;
         (void)new_data;
+        (void)can_yield;
         return 0;
 }
 
@@ -71,5 +72,6 @@ try_to_decompress_tuple_data(struct space *space, const char *data,
         (void)data;
         (void)end;
         (void)new_data;
+        (void)can_yield;
         return 0;
 }
