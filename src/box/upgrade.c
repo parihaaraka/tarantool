@@ -28,6 +28,7 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#include "box.h"
 #include "func.h"
 #include "iproto_constants.h"
 #include "space.h"
@@ -242,6 +243,22 @@ finish:
 	return rc;
 }
 
+/** Execute _space_upgrade:delete({space_id}) request. */
+static int
+space_upgrade_delete_entry(uint32_t space_id)
+{
+	return boxk(IPROTO_DELETE, BOX_SPACE_UPGRADE_ID, "[%u]", space_id);
+}
+
+/** Execute _space_upgrade:update(space_id, {{'=', 2, status}}) request. */
+static int
+space_upgrade_update_entry_status(uint32_t space_id, enum upgrade_status status)
+{
+	return boxk(IPROTO_UPDATE, BOX_SPACE_UPGRADE_ID, "[%u][[%s%u%s]]",
+		    space_id, "=", BOX_SPACE_UPGRADE_FIELD_STATUS,
+		    upgrade_status_strs[status]);
+}
+
 int
 space_upgrade_test(uint32_t space_id)
 {
@@ -293,6 +310,7 @@ space_upgrade_test(uint32_t space_id)
 		}
 	}
 	iterator_delete(it);
+	(void) space_upgrade_delete_entry(space_id);
 	return rc;
 }
 
@@ -371,6 +389,19 @@ space_upgrade(uint32_t space_id)
 		if (txn_commit(in_txn()) != 0)
 			rc = -1;
 		fiber_gc();
+	}
+	if (rc != 0) {
+		struct error *last_err = diag_last_error(diag_get());
+		if (space_upgrade_update_entry_status(space_id,
+						      UPGRADE_ERROR) != 0) {
+			struct error *e = diag_last_error(diag_get());
+			say_error("Failed to update upgrade status: %s",
+				  e->errmsg);
+			/* Restore original error. */
+			diag_set_error(diag_get(), last_err);
+		}
+	} else {
+		rc = space_upgrade_delete_entry(space_id);
 	}
 	return rc;
 }

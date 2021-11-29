@@ -655,16 +655,6 @@ local function check_upgrade_mode(mode)
     end
 end
 
--- Set to the space options "error" status.
-local function space_upgrade_error(space_id)
-    box.space._space_upgrade:update(space_id, {{'=', 2, "error"}})
-end
-
--- Finish upgrade: remove entry from _space_upgrade.
-local function space_upgrade_finish(space_id)
-    box.space._space_upgrade:delete(space_id)
-end
-
 local function space_upgrade_run(space_id, mode, func_id, format)
     local _space_upgrade = box.space._space_upgrade
     local su = _space_upgrade:get({space_id})
@@ -677,7 +667,7 @@ local function space_upgrade_run(space_id, mode, func_id, format)
         --
         _space_upgrade:replace({space_id, "test", func_id, format})
         rc = builtin.space_upgrade_test(space_id)
-        space_upgrade_finish(space_id)
+        assert(box.space._space_upgrade:get({space_id}) == nil)
         if rc ~= 0 then box.error() end
         log.info(":upgrade() test is finished")
     end
@@ -703,7 +693,7 @@ local function space_upgrade_run(space_id, mode, func_id, format)
         -- so to make this function behave "consistently" let's remove
         -- corresponding tuple.
         --
-        space_upgrade_finish(space_id)
+        box.space._space_upgrade:delete(space_id)
         box.error(err)
     end
     log.info("Changed space format")
@@ -711,10 +701,10 @@ local function space_upgrade_run(space_id, mode, func_id, format)
     rc = builtin.space_upgrade(space_id)
     if rc ~= 0 then
         -- Space's format remains updated.
-        space_upgrade_error(space_id)
+        assert(box.space._space_upgrade:get({space_id})[2] == "error")
         box.error()
     end
-    space_upgrade_finish(space_id)
+    assert(box.space._space_upgrade:get({space_id}) == nil)
     log.info("Space upgrade has successfully finished")
 end
 
