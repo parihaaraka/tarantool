@@ -239,6 +239,7 @@ box_index_get(uint32_t space_id, uint32_t index_id, const char *key,
 	uint32_t part_count = mp_decode_array(&key);
 	if (exact_key_validate(index->def->key_def, key, part_count))
 		return -1;
+	bool is_upgraded = space_is_upgraded(space);
 	/* Start transaction in the engine. */
 	struct txn *txn;
 	struct txn_ro_savepoint svp;
@@ -252,7 +253,7 @@ box_index_get(uint32_t space_id, uint32_t index_id, const char *key,
 	/* Count statistics. */
 	rmean_collect(rmean_box, IPROTO_SELECT, 1);
 	if (*result != NULL) {
-		if (space_is_upgraded(space)) {
+		if (is_upgraded) {
 			struct tuple *upgraded_tuple = NULL;
 			if (space_upgrade_convert_tuple(space, *result,
 							&upgraded_tuple) != 0)

@@ -2292,6 +2292,12 @@ box_select(uint32_t space_id, uint32_t index_id,
 	uint32_t found = 0;
 	struct tuple *tuple;
 	port_c_create(port);
+	/*
+	 * In case of vinyl iterator_next may yield. During yield space
+	 * can be altered and space pointer can turn out to be obsolete
+	 * (containing trash).
+	 */
+	bool is_upgraded = space_is_upgraded(space);
 	while (found < limit) {
 		rc = iterator_next(it, &tuple);
 		if (rc != 0 || tuple == NULL)
@@ -2300,7 +2306,7 @@ box_select(uint32_t space_id, uint32_t index_id,
 			offset--;
 			continue;
 		}
-		if (space_is_upgraded(space)) {
+		if (is_upgraded) {
 			struct tuple *upgraded_tuple = NULL;
 			if (space_upgrade_convert_tuple(space, tuple,
 							&upgraded_tuple) != 0)
